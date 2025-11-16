@@ -1,0 +1,59 @@
+---
+config:
+  themeVariables:
+    primaryColor: '#a2cef0'
+    secondaryColor: '#e0e4ef'
+    tertiaryColor: '#0676d1'
+    edgeLabelBackground: '#e0e4ef'
+    fontFamily: Segoe UI, Arial
+    fontSize: 18px
+  layout: dagre
+---
+flowchart TB
+ subgraph HR["**RH & Employés**"]
+    direction TB
+        H["**HR System**<br>Kelio"]
+  end
+ subgraph IGA["**IGA - MidPoint**"]
+    direction TB
+        I["**Cycle de Vie**<br>RBAC &amp; SoD"]
+  end
+ subgraph AM["**AM - Entra ID**"]
+    direction TB
+        A["**SSO + MFA**<br>Conditional Access"]
+  end
+ subgraph PAM["**PAM - PIM/Key Vault**"]
+    direction TB
+        P["**JIT + Rotation**<br>Secrets"]
+  end
+ subgraph SOAR["**AI/SOAR** Sentinel/ML"]
+    direction TB
+        S["**UEBA**<br>Playbooks Auto"]
+  end
+ subgraph DATA["**Data Gov**<br>Varonis/Purview"]
+    direction TB
+        D["**Audit Fichiers**<br>DLP"]
+  end
+    H --> I
+    I --> A
+    A --> P
+    S -.-> I & A & P
+    D -.-> A & P
+     H:::hr
+     H:::hr
+     I:::iga
+     I:::iga
+     A:::am
+     A:::am
+     P:::pam
+     P:::pam
+     S:::soar
+     S:::soar
+     D:::data
+     D:::data
+    classDef hr fill:#d4f7dc,stroke:#089404,stroke-width:2px
+    classDef iga fill:#fff7c1,stroke:#ccb400,stroke-width:2px
+    classDef am fill:#dce9fa,stroke:#0676d1,stroke-width:2px
+    classDef pam fill:#ffeaea,stroke:#eb4848,stroke-width:2px
+    classDef soar fill:#e9e0f7,stroke:#7d3cdf,stroke-width:2px
+    classDef data fill:#f5eedc,stroke:#b88312,stroke-width:2px

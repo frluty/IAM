@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<resource oid="8a83b1a4-be18-11d0-a765-123478563412"
+          xmlns="http://midpoint.evolveum.com/xml/ns/public/common/common-3"
+          xmlns:c="http://midpoint.evolveum.com/xml/ns/public/common/common-3"
+          xmlns:t="http://prism.evolveum.com/xml/ns/public/types-3"
+          xmlns:icfs="http://midpoint.evolveum.com/xml/ns/public/connector/icf-1/resource-schema-3"
+          xmlns:ri="http://midpoint.evolveum.com/xml/ns/public/resource/instance-3">
+    
+    <name>OpenLDAP Kerialis</name>
+    <description>Connexion au serveur OpenLDAP Kerialis</description>
+    
+    <connectorRef type="c:ConnectorType">
+        <description>Reference to the LDAP connector</description>
+        <filter>
+            <q:equal xmlns:q="http://prism.evolveum.com/xml/ns/public/query-3">
+                <q:path>c:connectorType</q:path>
+                <q:value>com.evolveum.polygon.connector.ldap.LdapConnector</q:value>
+            </q:equal>
+        </filter>
+    </connectorRef>
+    
+    <connectorConfiguration>
+        <icfs:configurationProperties 
+            xmlns:icfcldap="http://midpoint.evolveum.com/xml/ns/public/connector/icf-1/bundle/com.evolveum.polygon.connector-ldap/com.evolveum.polygon.connector.ldap.LdapConnector">
+            
+            <icfcldap:host>ldap.kerialis.local</icfcldap:host>
+            <icfcldap:port>389</icfcldap:port>
+            <icfcldap:baseContext>dc=kerialis,dc=local</icfcldap:baseContext>
+            <icfcldap:bindDn>cn=admin,dc=kerialis,dc=local</icfcldap:bindDn>
+            <icfcldap:bindPassword>
+                <t:clearValue>admin</t:clearValue>
+            </icfcldap:bindPassword>
+            <icfcldap:connectionSecurity>none</icfcldap:connectionSecurity>
+            
+        </icfs:configurationProperties>
+    </connectorConfiguration>
+    
+</resource>

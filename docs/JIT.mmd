@@ -1,0 +1,47 @@
+%%{init: { 
+  'themeVariables': { 
+    'fontFamily': 'Segoe UI, Arial', 
+    'fontSize': '18px', 
+    'primaryColor': '#D1E8FF', 
+    'edgeLabelBackground': '#FFFFFF'
+  },
+  'flowchart': { 'curve': 'basis' }
+}}%%
+flowchart LR
+
+  %% NODES (make shapes and labels distinctive, concise)
+  U(("**User**")):::start
+  V(["**MFA**"]):::verify
+  D{"**Device**<br/>_Entreprise_"}:::verify
+  N{"**Network**<br/>ZTNA"}:::verify
+  A(["**App**<br/>Cond. Access"]):::verify
+  DT["**Data**<br/>TDE · Purview"]:::data
+  M(("**Monitor**<br/>Sentinel·UEBA")):::monitor
+  R("**Remédiation**<br/>Logic Apps"):::remediate
+
+  %% FLOWS (use custom directions)
+  U --> V
+  V --> D
+  D --> N
+  N --> A
+  A --> DT
+  DT --> M
+  M -.->|"Anomalie"| R
+  R -.->|"cycle"| U
+
+  %% COLORS & CLASSES
+  classDef start fill:#99E2B4,stroke:#278451,stroke-width:3px
+  classDef verify fill:#F4D06F,stroke:#B89D13,stroke-width:2px
+  classDef data fill:#8CDFF9,stroke:#1B8BC7,stroke-width:2px
+  classDef monitor fill:#D0BDF4,stroke:#6949AF,stroke-width:2px
+  classDef remediate fill:#F4978E,stroke:#B94B3B,stroke-width:2px
+  
+  class U start
+  class V,D,N,A verify
+  class DT data
+  class M monitor
+  class R remediate
+
+  %% Stylish anomaly/remediate edge
+  linkStyle 6 stroke:#B94B3B,stroke-width:4px,stroke-dasharray:5 5,color:#B94B3B
+

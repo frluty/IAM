@@ -1,0 +1,38 @@
+%%{init: {
+  "themeVariables": {
+    "fontFamily": "Segoe UI, Arial",
+    "fontSize": "18px",
+    "primaryColor": "#D1E8FF"
+  }
+}}%%
+flowchart LR
+
+  subgraph Onboarding_Process["`**Processus d'Onboarding & Offboarding**`"]
+    direction LR
+    A(["`**RH**\nNouvel Employé`"]):::hr
+    B["`**MidPoint**\nCréation Identité`"]:::midpoint
+    C{"`**Provisioning**\nRôles + Accès`"}:::prov
+    D("`**Lifecycle**\nSurveillance UEBA`"):::lifecycle
+    E(["`**Changement**\nMise à Jour`"]):::change
+    F["`**Départ RH**\nOffboarding`"]:::offboard
+    G["`**Déprovisioning**\nArchivage`"]:::archive
+    A --> B --> C --> D --> E --> F --> G
+  end
+
+  %% Color classes
+  classDef hr fill:#ffefba,stroke:#bda405,stroke-width:2px;
+  classDef midpoint fill:#b3e9ff,stroke:#0573bd,stroke-width:2px;
+  classDef prov fill:#d7ffb3,stroke:#31a702,stroke-width:2px;
+  classDef lifecycle fill:#d4bef7,stroke:#6d2ebd,stroke-width:2px;
+  classDef change fill:#ffd6e0,stroke:#c4164d,stroke-width:2px;
+  classDef offboard fill:#fff7c1,stroke:#ccb400,stroke-width:2px;
+  classDef archive fill:#c3c6fc,stroke:#484ebd,stroke-width:2px;
+  
+  %% Assign classes
+  class A hr;
+  class B midpoint;
+  class C prov;
+  class D lifecycle;
+  class E change;
+  class F offboard;
+  class G archive;

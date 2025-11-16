@@ -1,0 +1,37 @@
+%%{init: { 'themeVariables': { 'fontFamily': 'Segoe UI, Arial', 'fontSize': '18px' } } }%%
+flowchart TD
+  %%--- Subgraphs with Markdown and distinctive colors ------
+  subgraph ONPREM["`**On-Premise**`"]
+    direction TB
+    AD["`**Active Directory**`"]:::onprem
+    V["`**Varonis<br/>File Audit**`"]:::onprem
+  end
+  subgraph HYBRID["`**Hybrid Connectivity**`"]
+    CONNECT("`AD Connect`"):::hybrid
+  end
+  subgraph CLOUD["`**Azure Cloud**`"]
+    direction TB
+    M["`**MidPoint**<br/>AKS`"]:::cloud
+    E("`**Entra ID**`"):::cloud
+    KV["`Key Vault`"]:::cloud
+    S["`Sentinel`"]:::cloud
+    ML["`ML`"]:::cloudml
+  end
+
+  %%--- Links and Flows
+  AD -->|"Sync Users"| CONNECT --> E
+  V -.->|"Audit logs"| S
+  M -->|"Provision"| E
+  M -->|"Provision"| KV
+  ML -.->|"Playbooks/AI"| S
+
+  %%--- Node colors via CSS classes
+  classDef onprem fill:#ffb6b6,stroke:#b71c1c,stroke-width:2px
+  classDef hybrid fill:#ffe099,stroke:#b1971c,stroke-width:2px
+  classDef cloud fill:#b1eedb,stroke:#068467,stroke-width:2px
+  classDef cloudml fill:#d6c3fc,stroke:#483285,stroke-width:2px
+
+  %%--- Subgraph background colors (optional, can use style as well)
+  style ONPREM fill:#ffeaea,stroke:#b71c1c,stroke-width:2px
+  style HYBRID fill:#fff7d6,stroke:#b1971c,stroke-width:2px
+  style CLOUD fill:#e3fcf6,stroke:#068467,stroke-width:2px

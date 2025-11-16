@@ -1,0 +1,32 @@
+%%{init: { 'themeVariables': { 'fontFamily': 'Segoe UI, Arial', 'fontSize': '16px', 'primaryColor': '#E5F6FF', 'secondaryColor': '#f7fafb', 'tertiaryColor': '#3699B4'} }}%%
+flowchart LR
+    G(("Commit")):::git
+    T(["Terraform<br>Init/Plan"]):::tf
+    A(("Apply")):::actions
+    K{"K8s<br>Deploy<br>MidPoint"}:::k8s
+    E["Entra ID<br>Config"]:::entra
+    S(("Playbooks")):::sentinel
+    M{"Monitoring<br>Success/Fail"}:::monitor
+    R(["Rollback"]):::rollback
+
+    G --> T --> A --> K --> E --> S --> M
+    M -->|"Fail"| R
+
+    %% Color classes
+    classDef git fill:#C0DDFB,stroke:#004D73,stroke-width:2px;
+    classDef tf fill:#F3E7E6,stroke:#A54F2A,stroke-width:2px;
+    classDef actions fill:#CEEAF7,stroke:#0376AE,stroke-width:2px;
+    classDef k8s fill:#E6F7F4,stroke:#15847A,stroke-width:2px;
+    classDef entra fill:#E8EAF6,stroke:#4B61B6,stroke-width:2px;
+    classDef sentinel fill:#EEE0FB,stroke:#56378A,stroke-width:2px;
+    classDef monitor fill:#F9F4D2,stroke:#B6A900,stroke-width:2px;
+    classDef rollback fill:#FFCFC9,stroke:#CA321A,stroke-width:2px;
+
+    class G git;
+    class T tf;
+    class A actions;
+    class K k8s;
+    class E entra;
+    class S sentinel;
+    class M monitor;
+    class R rollback;
