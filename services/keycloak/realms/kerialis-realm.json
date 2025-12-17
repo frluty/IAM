@@ -1,0 +1,110 @@
+{
+  "realm": "kerialis",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "failureFactor": 30,
+
+  "requiredCredentials": ["password"],
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername()",
+
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA256",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "otpPolicyLookAheadWindow": 1,
+  "otpSupportedApplications": ["FreeOTP", "Google Authenticator", "Microsoft Authenticator"],
+
+  "browserFlow": "browser-with-mfa",
+  "directGrantFlow": "direct grant",
+
+  "users": [
+    {
+      "username": "administrator",
+      "enabled": true,
+      "email": "admin@kerialis.local",
+      "firstName": "Admin",
+      "lastName": "Kerialis",
+      "credentials": [
+        { "type": "password", "value": "${KEYCLOAK_ADMIN_PASSWORD:-Keycl0ak2025!}", "temporary": false }
+      ],
+      "realmRoles": ["admin"]
+    }
+  ],
+
+  "roles": {
+    "realm": [
+      { "name": "admin" },
+      { "name": "user" },
+      { "name": "rh" },
+      { "name": "dsi" }
+    ]
+  },
+
+  "defaultRoles": ["user"],
+
+  "clients": [
+    {
+      "clientId": "midpoint",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "secret": "midpoint-secret-2025",
+      "redirectUris": ["http://localhost:8080/midpoint/*"],
+      "webOrigins": ["http://localhost:8080"],
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ],
+
+  "authenticationFlows": [
+    {
+      "alias": "browser-with-mfa",
+      "description": "Flow MFA obligatoire + step-up",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "idp-review-profile", "requirement": "ALTERNATIVE" },
+        { "authenticator": "cookie", "requirement": "ALTERNATIVE" },
+        { "authenticator": "auth-username-password-form", "requirement": "REQUIRED" },
+        { "authenticator": "conditional-otp-form", "requirement": "REQUIRED" }
+      ]
+    },
+    {
+      "alias": "conditional-otp-form",
+      "providerId": "auth-conditional-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "condition-user-configured",
+          "requirement": "REQUIRED",
+          "authenticatorConfig": "has-otp-configured"
+        },
+        { "authenticator": "auth-otp-form", "requirement": "REQUIRED" }
+      ]
+    }
+  ],
+
+  "authenticatorConfig": [
+    {
+      "alias": "has-otp-configured",
+      "config": {
+        "condition": "org.keycloak.authentication.authenticators.conditional.ConditionalUserConfiguredAuthenticator"
+      }
+    }
+  ]
+}

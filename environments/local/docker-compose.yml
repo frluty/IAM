@@ -1,0 +1,328 @@
+networks:
+  iam-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  postgres_data:
+  midpoint_home:
+  ldap_data:
+  ldap_config:
+  redis_data:
+  keycloak_data:
+  vault_data:
+  vault_logs:
+  grafana_data:
+  prometheus_data:
+
+services:
+  # Base de données PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: iam-postgres
+    hostname: postgres.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.10
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres2025
+      POSTGRES_MULTIPLE_DATABASES: midpoint,keycloak,sirh
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # MidPoint - IGA Platform
+  midpoint_init:
+    image: evolveum/midpoint:${MP_VER:-4.8}-alpine
+    container_name: iam-midpoint-init
+    command: >
+      bash -c "
+      cd /opt/midpoint ;
+      bin/midpoint.sh init-native ;
+      bin/ninja.sh -B info >/dev/null 2>/tmp/ninja.log ;
+      grep -q 'ERROR' /tmp/ninja.log && (
+        bin/ninja.sh run-sql --create --mode REPOSITORY ;
+        bin/ninja.sh run-sql --create --mode AUDIT
+      ) || echo 'Repository already initialized' ;
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - MP_SET_midpoint_repository_jdbcUsername=midpoint
+      - MP_SET_midpoint_repository_jdbcPassword=postgres2025
+      - MP_SET_midpoint_repository_jdbcUrl=jdbc:postgresql://postgres:5432/midpoint
+      - MP_SET_midpoint_repository_database=postgresql
+      - MP_INIT_CFG=/opt/midpoint/var
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.11
+    volumes:
+      - midpoint_home:/opt/midpoint/var
+      - ../../services/midpoint/resources:/opt/midpoint/var/initial-objects
+
+  midpoint:
+    image: evolveum/midpoint:${MP_VER:-4.8}-alpine
+    container_name: iam-midpoint
+    hostname: midpoint.kerialis.local
+    depends_on:
+      midpoint_init:
+        condition: service_completed_successfully
+    command: ["/opt/midpoint/bin/midpoint.sh", "container"]
+    ports:
+      - "8080:8080"
+    environment:
+      - MP_SET_midpoint_repository_jdbcUsername=midpoint
+      - MP_SET_midpoint_repository_jdbcPassword=postgres2025
+      - MP_SET_midpoint_repository_jdbcUrl=jdbc:postgresql://postgres:5432/midpoint
+      - MP_SET_midpoint_repository_database=postgresql
+      - MP_SET_midpoint_administrator_initialPassword=5ecr3t
+      - MP_UNSET_midpoint_repository_hibernateHbm2ddl=1
+      - MP_NO_ENV_COMPAT=1
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.12
+    volumes:
+      - midpoint_home:/opt/midpoint/var
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/midpoint/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  # OpenLDAP Directory
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: iam-ldap
+    hostname: ldap.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.13
+    environment:
+      LDAP_ORGANISATION: "Kerialis"
+      LDAP_DOMAIN: "kerialis.local"
+      LDAP_ADMIN_PASSWORD: admin
+      LDAP_CONFIG_PASSWORD: config
+      LDAP_RFC2307BIS_SCHEMA: "true"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "true"
+      LDAP_TLS: "false"
+    ports:
+      - "389:389"
+      - "636:636"
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+      - ../../services/ldap/init:/container/service/slapd/assets/config/bootstrap/ldif/custom
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost", "-b", "dc=kerialis,dc=local", "-D", "cn=admin,dc=kerialis,dc=local", "-w", "admin"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # phpLDAPadmin
+  phpldapadmin:
+    image: osixia/phpldapadmin:latest
+    container_name: iam-phpldapadmin
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.14
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: ldap.kerialis.local
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "8090:80"
+    depends_on:
+      ldap:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Keycloak - SSO/IAM
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: iam-keycloak
+    hostname: keycloak.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.15
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres2025
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin123
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY: edge
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    command:
+      - start-dev
+      - --import-realm
+    ports:
+      - "8180:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ../../services/keycloak/realms:/opt/keycloak/data/import
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # HashiCorp Vault - Secrets Management
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: iam-vault
+    hostname: vault.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.16
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root-token-dev
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    volumes:
+      - vault_data:/vault/data
+      - vault_logs:/vault/logs
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: iam-redis
+    hostname: redis.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.17
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # SIRH API - HR Events
+  sirh-api:
+    build:
+      context: ../../services/sirh-api
+      dockerfile: Dockerfile
+    container_name: iam-sirh-api
+    hostname: sirh-api.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.18
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres2025@postgres:5432/sirh
+      MIDPOINT_URL: http://midpoint:8080/midpoint
+      MIDPOINT_USER: administrator
+      MIDPOINT_PASSWORD: 5ecr3t
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../services/sirh-api:/app
+    restart: unless-stopped
+
+  # Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: iam-prometheus
+    hostname: prometheus.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.19
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+
+  # Grafana - Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: iam-grafana
+    hostname: grafana.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.20
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../../monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: iam-nginx
+    hostname: nginx.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.21
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - midpoint
+      - keycloak
+      - grafana
+      - sirh-api
+    restart: unless-stopped

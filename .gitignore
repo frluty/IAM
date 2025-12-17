@@ -73,3 +73,12 @@ desktop.ini
 *.key
 *.cert
 keystore.jceks
+
+# Python cache & binaries
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PDF volumineux
+*.pdf

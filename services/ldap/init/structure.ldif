@@ -1,0 +1,45 @@
+# Structure organisationnelle
+dn: ou=users,dc=kerialis,dc=local
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=kerialis,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+# Utilisateurs de test
+dn: uid=jdupont,ou=users,dc=kerialis,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+objectClass: top
+uid: jdupont
+cn: Jean Dupont
+sn: Dupont
+givenName: Jean
+mail: jean.dupont@kerialis.local
+userPassword: Password123
+
+dn: uid=mmartin,ou=users,dc=kerialis,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+objectClass: top
+uid: mmartin
+cn: Marie Martin
+sn: Martin
+givenName: Marie
+mail: marie.martin@kerialis.local
+userPassword: Password123
+
+dn: uid=pbernard,ou=users,dc=kerialis,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+objectClass: top
+uid: pbernard
+cn: Pierre Bernard
+sn: Bernard
+givenName: Pierre
+mail: pierre.bernard@kerialis.local
+userPassword: Password123

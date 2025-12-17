@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant SIRH as SIRH API
+    participant MP as MidPoint
+    participant LDAP as OpenLDAP
+    participant KC as Keycloak
+    participant Prom as Prometheus
+
+    SIRH->>SIRH: POST /employees/onboard
+    SIRH->>MP: Envoyer événement RH
+    MP->>LDAP: Créer compte LDAP
+    MP->>KC: Créer utilisateur Keycloak
+    MP->>SIRH: Confirmation provisioning
+    SIRH->>Prom: Incrémenter métrique onboarding
+    Prom-->>Grafana: Mise à jour dashboard
