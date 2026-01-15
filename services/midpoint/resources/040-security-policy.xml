@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<securityPolicy oid="00000000-0000-0000-0000-000000000120"
+                xmlns="http://midpoint.evolveum.com/xml/ns/public/common/common-3"
+                xmlns:c="http://midpoint.evolveum.com/xml/ns/public/common/common-3">
+    <name>Default Security Policy</name>
+    
+    <authentication>
+        <modules>
+            <loginForm>
+                <name>loginForm</name>
+                <identifier>loginForm</identifier>
+            </loginForm>
+            <httpBasic>
+                <name>httpBasic</name>
+                <identifier>httpBasic</identifier>
+            </httpBasic>
+        </modules>
+        <sequence>
+            <name>admin-gui-default</name>
+            <channel>
+                <channelId>http://midpoint.evolveum.com/xml/ns/public/common/channels-3#user</channelId>
+                <default>true</default>
+                <urlSuffix>gui-default</urlSuffix>
+            </channel>
+            <module>
+                <name>loginForm</name>
+                <order>1</order>
+                <necessity>sufficient</necessity>
+            </module>
+        </sequence>
+        <sequence>
+            <name>rest-default</name>
+            <channel>
+                <channelId>http://midpoint.evolveum.com/xml/ns/public/common/channels-3#rest</channelId>
+                <default>true</default>
+                <urlSuffix>rest-default</urlSuffix>
+            </channel>
+            <module>
+                <name>httpBasic</name>
+                <order>1</order>
+                <necessity>sufficient</necessity>
+            </module>
+        </sequence>
+    </authentication>
+    
+    <credentials>
+        <password>
+            <minOccurs>0</minOccurs>
+            <lockoutMaxFailedAttempts>3</lockoutMaxFailedAttempts>
+            <lockoutFailedAttemptsDuration>PT3M</lockoutFailedAttemptsDuration>
+            <lockoutDuration>PT15M</lockoutDuration>
+            <valuePolicyRef oid="00000000-0000-0000-0000-000000000003" type="c:ValuePolicyType"/>
+        </password>
+    </credentials>
+</securityPolicy>

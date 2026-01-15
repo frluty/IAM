@@ -5,6 +5,17 @@ global:
     cluster: 'iam-local'
     environment: 'development'
 
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load alerting rules
+rule_files:
+  - 'alerts.yml'
+
 scrape_configs:
   # Prometheus itself
   - job_name: 'prometheus'

@@ -34,7 +34,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -117,8 +117,9 @@ services:
       LDAP_ADMIN_PASSWORD: admin
       LDAP_CONFIG_PASSWORD: config
       LDAP_RFC2307BIS_SCHEMA: "true"
-      LDAP_REMOVE_CONFIG_AFTER_SETUP: "true"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "false"
       LDAP_TLS: "false"
+      LDAP_REPLICATION: "false"
     ports:
       - "389:389"
       - "636:636"
@@ -275,6 +276,7 @@ services:
       - "9090:9090"
     volumes:
       - ../../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../../monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -282,6 +284,23 @@ services:
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
       - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+
+  # Alertmanager - Alert Management
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: iam-alertmanager
+    hostname: alertmanager.kerialis.local
+    networks:
+      iam-network:
+        ipv4_address: 172.30.0.22
+    ports:
+      - "9093:9093"
+    volumes:
+      - ../../monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
     restart: unless-stopped
 
   # Grafana - Dashboards

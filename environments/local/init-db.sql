@@ -1,5 +1,20 @@
 -- IAM 360° - Initialisation PostgreSQL
 
+-- Créer les utilisateurs pour les différentes bases
+CREATE USER midpoint WITH PASSWORD 'postgres2025';
+CREATE USER keycloak WITH PASSWORD 'postgres2025';
+CREATE USER sirh WITH PASSWORD 'postgres2025';
+
+-- Créer les bases de données
+CREATE DATABASE midpoint OWNER midpoint;
+CREATE DATABASE keycloak OWNER keycloak;
+CREATE DATABASE sirh OWNER sirh;
+
+-- Accorder tous les privilèges
+GRANT ALL PRIVILEGES ON DATABASE midpoint TO midpoint;
+GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
+GRANT ALL PRIVILEGES ON DATABASE sirh TO sirh;
+
 \c sirh;
 
 CREATE TABLE IF NOT EXISTS employees (

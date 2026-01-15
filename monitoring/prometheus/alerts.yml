@@ -1,0 +1,215 @@
+# Alerting rules for IAM 360° platform
+
+groups:
+  - name: iam_services
+    interval: 30s
+    rules:
+      # Service availability alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: iam
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been down for more than 2 minutes."
+
+      - alert: MidPointDown
+        expr: up{job="midpoint"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: iam
+          service: midpoint
+        annotations:
+          summary: "MidPoint IGA is down"
+          description: "MidPoint service is unavailable. All provisioning operations are blocked."
+
+      - alert: KeycloakDown
+        expr: up{job="keycloak"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: iam
+          service: keycloak
+        annotations:
+          summary: "Keycloak SSO is down"
+          description: "Keycloak is unavailable. Users cannot authenticate."
+
+      - alert: LDAPDown
+        expr: up{job="ldap"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: iam
+          service: ldap
+        annotations:
+          summary: "LDAP Directory is down"
+          description: "OpenLDAP service is unavailable."
+
+  - name: iam_operations
+    interval: 15s
+    rules:
+      # Provisioning SLA alerts
+      - alert: HighProvisioningFailureRate
+        expr: rate(sirh_onboarding_total{status="failed"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: iam
+        annotations:
+          summary: "High provisioning failure rate"
+          description: "More than 10% of onboarding operations are failing in the last 5 minutes."
+
+      - alert: SlowProvisioning
+        expr: histogram_quantile(0.95, rate(sirh_api_latency_seconds_bucket[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: iam
+        annotations:
+          summary: "Slow provisioning operations"
+          description: "95th percentile of provisioning latency is above 5 seconds."
+
+      - alert: NoProvisioningActivity
+        expr: rate(sirh_onboarding_total[30m]) == 0 and hour() >= 8 and hour() <= 18
+        for: 1h
+        labels:
+          severity: warning
+          component: iam
+        annotations:
+          summary: "No provisioning activity detected"
+          description: "No onboarding operations in the last hour during business hours. This might indicate an issue."
+
+      # Offboarding alerts
+      - alert: HighOffboardingFailureRate
+        expr: rate(sirh_offboarding_total{status="failed"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: iam
+        annotations:
+          summary: "High offboarding failure rate"
+          description: "More than 10% of offboarding operations are failing. Security risk!"
+
+      - alert: DelayedOffboarding
+        expr: time() - sirh_offboarding_pending_timestamp_seconds > 900
+        for: 5m
+        labels:
+          severity: critical
+          component: iam
+        annotations:
+          summary: "Offboarding delayed beyond SLA"
+          description: "Offboarding operation has been pending for more than 15 minutes. SLA breach!"
+
+  - name: database_health
+    interval: 30s
+    rules:
+      - alert: DatabaseConnectionPoolExhausted
+        expr: pg_stat_database_numbackends / pg_settings_max_connections > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database connection pool near exhaustion"
+          description: "PostgreSQL connection pool is at {{ $value | humanizePercentage }} capacity."
+
+      - alert: DatabaseDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL is unavailable. All IAM operations are blocked."
+
+      - alert: HighDatabaseLatency
+        expr: rate(pg_stat_database_blk_read_time[5m]) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High database query latency"
+          description: "Database queries are taking longer than usual."
+
+  - name: resource_usage
+    interval: 30s
+    rules:
+      # Memory alerts
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 90%: {{ $value | humanizePercentage }}"
+
+      - alert: CriticalMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Critical memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 95%: {{ $value | humanizePercentage }}"
+
+      # Disk alerts
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk space below 10% on {{ $labels.mountpoint }}"
+
+      - alert: CriticalDiskSpace
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Critical disk space on {{ $labels.instance }}"
+          description: "Disk space below 5% on {{ $labels.mountpoint }}. Immediate action required!"
+
+  - name: security_alerts
+    interval: 30s
+    rules:
+      - alert: TooManyFailedLogins
+        expr: rate(keycloak_failed_login_attempts[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High rate of failed login attempts"
+          description: "More than 10 failed login attempts per second. Possible brute force attack."
+
+      - alert: UnauthorizedAccessAttempts
+        expr: rate(http_requests_total{status="401"}[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High rate of unauthorized access attempts"
+          description: "Elevated 401 errors detected. Possible security incident."
+
+      - alert: AdminAccountActivity
+        expr: rate(midpoint_admin_operations_total[1h]) > 100
+        for: 5m
+        labels:
+          severity: info
+          component: security
+        annotations:
+          summary: "Unusual admin account activity"
+          description: "High volume of admin operations detected. Review for anomalies."
