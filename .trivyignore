@@ -1,0 +1,5 @@
+# .trivyignore — CVEs accepted as false-positives or pending fix
+#
+# Format: one CVE-ID per line, with an optional comment
+# Example:
+# CVE-2023-XXXX  # accepted risk — no upstream fix available

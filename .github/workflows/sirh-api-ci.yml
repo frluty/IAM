@@ -1,0 +1,100 @@
+# ============================================================
+#  CI — SIRH API  (example caller for reusable pipeline)
+#
+#  Triggers on push to main/develop and on pull requests.
+#  Calls the shared security pipeline with GHCR as registry.
+#  Change registry_type + secrets to target ACR or Harbor.
+# ============================================================
+name: CI — SIRH API
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "services/sirh-api/**"
+      - ".github/workflows/sirh-api-ci.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "services/sirh-api/**"
+  workflow_dispatch:
+    inputs:
+      registry_type:
+        description: "Target registry (ghcr | acr | harbor)"
+        required: false
+        default: "ghcr"
+      enable_signing:
+        description: "Sign the image"
+        required: false
+        default: "true"
+
+jobs:
+  # ── Security pipeline ──────────────────────────────────
+  security-pipeline:
+    name: Security Pipeline
+    uses: ./.github/workflows/reusable-docker-security.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write
+      attestations: write
+    with:
+      # Image
+      image_name:   sirh-api
+      dockerfile:   services/sirh-api/Dockerfile
+      context:      services/sirh-api
+      platforms:    linux/amd64
+
+      # Registry — change to acr or harbor as needed
+      registry_type: ${{ github.event.inputs.registry_type || 'ghcr' }}
+      # registry_url:  myregistry.azurecr.io    # uncomment for acr / harbor
+
+      # Gates
+      enable_code_scan:       true
+      enable_image_scan:      true
+      enable_signing:         ${{ github.event.inputs.enable_signing != 'false' && github.event_name != 'pull_request' }}
+      signing_mode:           keyless
+      scan_severity:          CRITICAL,HIGH
+      fail_on_vulnerability:  true
+
+    secrets:
+      # GHCR — no extra secrets needed (uses GITHUB_TOKEN automatically)
+
+      # ACR Service Principal — uncomment if registry_type is acr with SP auth
+      # AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+      # AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+
+      # ACR Workload Identity (OIDC) — uncomment if no client secret
+      # AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+      # AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+      # AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Harbor — uncomment if registry_type is harbor
+      # REGISTRY_USERNAME: ${{ secrets.HARBOR_USER }}
+      # REGISTRY_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+
+      # Cosign key-pair — uncomment if signing_mode is keypair
+      # COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      # COSIGN_PASSWORD:    ${{ secrets.COSIGN_PASSWORD }}
+
+      # Semgrep cloud (optional)
+      # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ── Post-pipeline summary ──────────────────────────────
+  summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [security-pipeline]
+    if: always()
+    steps:
+      - name: Output results
+        run: |
+          echo "## SIRH API — Pipeline Result" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Output | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Digest  | \`${{ needs.security-pipeline.outputs.image_digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| URI     | \`${{ needs.security-pipeline.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tags    | \`${{ needs.security-pipeline.outputs.image_tags }}\` |" >> "$GITHUB_STEP_SUMMARY"

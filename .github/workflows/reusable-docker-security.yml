@@ -1,0 +1,533 @@
+# ============================================================
+#  Reusable Security Pipeline — Docker Build, Scan & Sign
+#
+#  Supports registries : ghcr | acr | harbor
+#  Signing modes       : keyless (Sigstore OIDC) | keypair
+#
+#  Usage: call this workflow with `uses: ./.github/workflows/reusable-docker-security.yml`
+# ============================================================
+name: Reusable — Docker Security Pipeline
+
+on:
+  workflow_call:
+    # ── Inputs ──────────────────────────────────────────────
+    inputs:
+      # Docker image
+      image_name:
+        description: "Image name, e.g. sirh-api"
+        required: true
+        type: string
+      dockerfile:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "Dockerfile"
+      context:
+        description: "Docker build context directory"
+        required: false
+        type: string
+        default: "."
+      build_args:
+        description: "Docker build-args (multiline KEY=VALUE)"
+        required: false
+        type: string
+        default: ""
+      platforms:
+        description: "Target platforms, e.g. linux/amd64,linux/arm64"
+        required: false
+        type: string
+        default: "linux/amd64"
+
+      # Registry
+      registry_type:
+        description: "Registry type: ghcr | acr | harbor"
+        required: true
+        type: string
+      registry_url:
+        description: "Registry hostname — required for acr & harbor (e.g. myacr.azurecr.io)"
+        required: false
+        type: string
+        default: ""
+      registry_namespace:
+        description: "Optional namespace / project inside the registry (e.g. myproject)"
+        required: false
+        type: string
+        default: ""
+
+      # Tags
+      extra_tags:
+        description: "Additional static tags, comma-separated (e.g. latest,stable)"
+        required: false
+        type: string
+        default: ""
+
+      # Pipeline gates
+      enable_code_scan:
+        description: "Run code & secret scanning (Trivy FS + Semgrep)"
+        required: false
+        type: boolean
+        default: true
+      enable_image_scan:
+        description: "Run image vulnerability scanning (Trivy)"
+        required: false
+        type: boolean
+        default: true
+      enable_signing:
+        description: "Sign the image with Cosign"
+        required: false
+        type: boolean
+        default: true
+      signing_mode:
+        description: "Cosign mode: keyless (OIDC) | keypair"
+        required: false
+        type: string
+        default: "keyless"
+      scan_severity:
+        description: "Severity filter for Trivy (CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN)"
+        required: false
+        type: string
+        default: "CRITICAL,HIGH"
+      fail_on_vulnerability:
+        description: "Exit with error if vulnerabilities are found"
+        required: false
+        type: boolean
+        default: true
+
+    # ── Secrets ─────────────────────────────────────────────
+    secrets:
+      # Harbor / generic basic-auth
+      REGISTRY_USERNAME:
+        required: false
+      REGISTRY_PASSWORD:
+        required: false
+
+      # Azure — Service Principal (used when AZURE_CLIENT_SECRET is set)
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_CLIENT_SECRET:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
+
+      # Cosign key-pair signing (only for signing_mode: keypair)
+      COSIGN_PRIVATE_KEY:
+        required: false
+      COSIGN_PASSWORD:
+        required: false
+
+      # Semgrep cloud (optional — OSS rules used if absent)
+      SEMGREP_APP_TOKEN:
+        required: false
+
+    # ── Outputs ─────────────────────────────────────────────
+    outputs:
+      image_digest:
+        description: "SHA256 digest of the pushed image"
+        value: ${{ jobs.build-push.outputs.digest }}
+      image_uri:
+        description: "Full image URI usable as image_name@digest"
+        value: ${{ jobs.build-push.outputs.image_uri }}
+      image_tags:
+        description: "Newline-separated list of applied tags"
+        value: ${{ jobs.build-push.outputs.tags }}
+
+# ============================================================
+jobs:
+
+  # ────────────────────────────────────────────────────────
+  # JOB 1 · Code & secret scanning
+  # ────────────────────────────────────────────────────────
+  code-scan:
+    name: Code & Secret Scan
+    runs-on: ubuntu-latest
+    if: inputs.enable_code_scan
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Trivy — filesystem (vuln + secret + misconfig) ──
+      - name: Trivy · FS scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: ${{ inputs.scan_severity }}
+          exit-code: ${{ inputs.fail_on_vulnerability && '1' || '0' }}
+          scanners: vuln,secret,misconfig
+          trivyignores: .trivyignore
+
+      - name: Trivy · upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      # ── Semgrep SAST ────────────────────────────────────
+      - name: Semgrep · SAST
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/default
+            p/secrets
+            p/owasp-top-ten
+            p/docker
+          generateSarif: "1"
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true   # OSS mode without token may exit non-zero
+
+      - name: Semgrep · upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+        continue-on-error: true
+
+  # ────────────────────────────────────────────────────────
+  # JOB 2 · Build & push Docker image
+  # ────────────────────────────────────────────────────────
+  build-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    needs: [code-scan]
+    if: |
+      always() &&
+      (needs.code-scan.result == 'success' || needs.code-scan.result == 'skipped')
+    permissions:
+      contents: read
+      packages: write       # GHCR
+      id-token: write       # OIDC — ACR Workload Identity + Cosign keyless
+      attestations: write   # SBOM / provenance attestation
+
+    outputs:
+      digest:    ${{ steps.push.outputs.digest }}
+      image_uri: ${{ steps.image-uri.outputs.value }}
+      tags:      ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Compute full registry prefix ─────────────────────
+      - name: Compute registry prefix
+        id: reg
+        run: |
+          NS="${{ inputs.registry_namespace }}"
+          NS="${NS:+/$NS}"
+          case "${{ inputs.registry_type }}" in
+            ghcr)
+              echo "prefix=ghcr.io/${{ github.repository_owner }}${NS}" >> "$GITHUB_OUTPUT"
+              ;;
+            acr)
+              echo "prefix=${{ inputs.registry_url }}${NS}" >> "$GITHUB_OUTPUT"
+              ;;
+            harbor)
+              echo "prefix=${{ inputs.registry_url }}${NS}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::registry_type must be one of: ghcr, acr, harbor"
+              exit 1
+              ;;
+          esac
+
+      # ── Registry login — GHCR ────────────────────────────
+      - name: Login · GHCR
+        if: inputs.registry_type == 'ghcr'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Registry login — ACR (Service Principal) ─────────
+      - name: Login · ACR (Service Principal)
+        if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry_url }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      # ── Registry login — ACR (Workload Identity / OIDC) ──
+      - name: Login · Azure OIDC
+        if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET == ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login · ACR token (OIDC)
+        if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET == ''
+        run: az acr login --name "${{ inputs.registry_url }}"
+
+      # ── Registry login — Harbor ──────────────────────────
+      - name: Login · Harbor
+        if: inputs.registry_type == 'harbor'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry_url }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # ── Compute Docker metadata (tags & labels) ──────────
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=ref,event=pr,prefix=pr-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            ${{ inputs.extra_tags }}
+          labels: |
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      # ── Build & push ─────────────────────────────────────
+      - name: Build & Push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context:     ${{ inputs.context }}
+          file:        ${{ inputs.dockerfile }}
+          platforms:   ${{ inputs.platforms }}
+          push:        true
+          tags:        ${{ steps.meta.outputs.tags }}
+          labels:      ${{ steps.meta.outputs.labels }}
+          build-args:  ${{ inputs.build_args }}
+          cache-from:  type=gha
+          cache-to:    type=gha,mode=max
+          provenance:  true
+          sbom:        true
+
+      # ── Compute full image URI (used by downstream jobs) ─
+      - name: Compute image URI
+        id: image-uri
+        run: |
+          FIRST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          IMAGE_BASE="${FIRST_TAG%%:*}"
+          echo "value=${IMAGE_BASE}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      # ── GitHub artifact attestation (provenance) ─────────
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name:   ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ────────────────────────────────────────────────────────
+  # JOB 3 · Image vulnerability scan (post-push)
+  # ────────────────────────────────────────────────────────
+  image-scan:
+    name: Image Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: [build-push]
+    if: inputs.enable_image_scan && needs.build-push.result == 'success'
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pull credentials so Trivy can pull the private image
+      - name: Login · GHCR
+        if: inputs.registry_type == 'ghcr'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login · ACR (SP)
+        if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry_url }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Login · Harbor
+        if: inputs.registry_type == 'harbor'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry_url }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # ── Trivy image scan → SARIF ──────────────────────────
+      - name: Trivy · image scan (SARIF)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref:  ${{ needs.build-push.outputs.image_uri }}
+          format:     sarif
+          output:     trivy-image.sarif
+          severity:   ${{ inputs.scan_severity }}
+          exit-code:  ${{ inputs.fail_on_vulnerability && '1' || '0' }}
+          scanners:   vuln,secret
+
+      - name: Trivy · upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category:   trivy-image
+
+      # ── Trivy image scan → JSON report artifact ───────────
+      - name: Trivy · image scan (JSON)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref:  ${{ needs.build-push.outputs.image_uri }}
+          format:     json
+          output:     trivy-image.json
+          severity:   ${{ inputs.scan_severity }}
+          exit-code:  "0"
+          scanners:   vuln,secret
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:            trivy-image-report-${{ github.run_id }}
+          path:            trivy-image.json
+          retention-days:  30
+
+      # ── Job summary ───────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Image Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ needs.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Severity filter | \`${{ inputs.scan_severity }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Report artifact | trivy-image-report-${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────
+  # JOB 4 · Sign image with Cosign
+  # ────────────────────────────────────────────────────────
+  sign-image:
+    name: Sign Image (Cosign)
+    runs-on: ubuntu-latest
+    needs: [build-push, image-scan]
+    if: |
+      inputs.enable_signing &&
+      needs.build-push.result == 'success' &&
+      (needs.image-scan.result == 'success' || needs.image-scan.result == 'skipped')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # mandatory for keyless OIDC signing
+
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Re-login (jobs run in isolated VMs)
+      - name: Login · GHCR
+        if: inputs.registry_type == 'ghcr'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login · ACR (SP)
+        if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry_url }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Login · Harbor
+        if: inputs.registry_type == 'harbor'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry_url }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # ── Keyless signing (Sigstore OIDC + Rekor) ──────────
+      - name: Sign · keyless (OIDC)
+        if: inputs.signing_mode == 'keyless'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            "${{ needs.build-push.outputs.image_uri }}"
+
+      # ── Key-pair signing ──────────────────────────────────
+      - name: Sign · key-pair
+        if: inputs.signing_mode == 'keypair'
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          printf '%s' "${{ secrets.COSIGN_PRIVATE_KEY }}" > /tmp/cosign.key
+          cosign sign --yes --key /tmp/cosign.key \
+            "${{ needs.build-push.outputs.image_uri }}"
+          rm -f /tmp/cosign.key
+
+      # ── SBOM / custom attestation ─────────────────────────
+      - name: Attest · build metadata
+        if: inputs.signing_mode == 'keyless'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest --yes \
+            --predicate <(jq -n \
+              --arg repo   "${{ github.repository }}" \
+              --arg ref    "${{ github.ref }}" \
+              --arg sha    "${{ github.sha }}" \
+              --arg run_id "${{ github.run_id }}" \
+              --arg actor  "${{ github.actor }}" \
+              '{buildTool:"github-actions", repo:$repo, ref:$ref, sha:$sha, runId:$run_id, triggeredBy:$actor}') \
+            --type custom \
+            "${{ needs.build-push.outputs.image_uri }}"
+
+      # ── Verify signature (sanity check) ──────────────────
+      - name: Verify signature
+        if: inputs.signing_mode == 'keyless'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ needs.build-push.outputs.image_uri }}"
+
+      # ── Summary ───────────────────────────────────────────
+      - name: Summary
+        run: |
+          echo "## Image Signed" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ needs.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Signing mode | \`${{ inputs.signing_mode }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Digest | \`${{ needs.build-push.outputs.image_digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
