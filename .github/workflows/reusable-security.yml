@@ -1,0 +1,289 @@
+# ================================================================
+#  Reusable Security Pipeline — orchestrator
+#
+#  Each job delegates to a focused composite action:
+#    detect-language  →  .github/actions/detect-language
+#    code-scan        →  .github/actions/scan-code
+#    dep-scan         →  .github/actions/scan-deps
+#    build-push       →  docker/build-push-action (+ registry-login)
+#    image-scan       →  .github/actions/scan-image
+#    sign             →  .github/actions/sign-image
+#
+#  Registries: ghcr | acr | harbor
+# ================================================================
+name: Reusable — Security Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "python | node | auto"
+        default:  "auto"
+        type: string
+      app_path:
+        description: "Source directory (where lockfiles live)"
+        default:  "."
+        type: string
+      image_name:
+        description: "Image name (e.g. sirh-api)"
+        required: true
+        type: string
+      dockerfile:
+        default:  "Dockerfile"
+        type: string
+      context:
+        default:  "."
+        type: string
+      build_args:
+        default:  ""
+        type: string
+      platforms:
+        default:  "linux/amd64"
+        type: string
+      extra_tags:
+        default:  ""
+        type: string
+      registry_type:
+        description: "ghcr | acr | harbor"
+        required: true
+        type: string
+      registry_url:
+        default:  ""
+        type: string
+      registry_namespace:
+        default:  ""
+        type: string
+      enable_code_scan:
+        default:  true
+        type: boolean
+      enable_dep_scan:
+        default:  true
+        type: boolean
+      enable_image_scan:
+        default:  true
+        type: boolean
+      enable_signing:
+        default:  true
+        type: boolean
+      signing_mode:
+        default:  "keyless"
+        type: string
+      severity:
+        default:  "CRITICAL,HIGH"
+        type: string
+      fail_on_vulnerability:
+        default:  true
+        type: boolean
+
+    secrets:
+      REGISTRY_USERNAME:      { required: false }
+      REGISTRY_PASSWORD:      { required: false }
+      AZURE_CLIENT_ID:        { required: false }
+      AZURE_CLIENT_SECRET:    { required: false }
+      AZURE_TENANT_ID:        { required: false }
+      AZURE_SUBSCRIPTION_ID:  { required: false }
+      COSIGN_PRIVATE_KEY:     { required: false }
+      COSIGN_PASSWORD:        { required: false }
+      SEMGREP_APP_TOKEN:      { required: false }
+
+    outputs:
+      image_digest:
+        value: ${{ jobs.build-push.outputs.digest }}
+      image_uri:
+        value: ${{ jobs.build-push.outputs.image_uri }}
+      image_tags:
+        value: ${{ jobs.build-push.outputs.tags }}
+      language:
+        value: ${{ jobs.detect.outputs.language }}
+
+# ================================================================
+jobs:
+
+  # ── 1. Detect language ───────────────────────────────────────
+  detect:
+    name: Detect Language
+    runs-on: ubuntu-latest
+    outputs:
+      language: ${{ steps.action.outputs.language }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/detect-language
+        id: action
+        with:
+          language: ${{ inputs.language }}
+          app_path: ${{ inputs.app_path }}
+
+  # ── 2. SAST — Semgrep ────────────────────────────────────────
+  code-scan:
+    name: "SAST · ${{ needs.detect.outputs.language }}"
+    runs-on: ubuntu-latest
+    needs: detect
+    if: inputs.enable_code_scan
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: ./.github/actions/scan-code
+        with:
+          language:      ${{ needs.detect.outputs.language }}
+          semgrep_token: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ── 3. Dependency audit ──────────────────────────────────────
+  dep-scan:
+    name: "Deps · ${{ needs.detect.outputs.language }}"
+    runs-on: ubuntu-latest
+    needs: detect
+    if: inputs.enable_dep_scan && needs.detect.outputs.language != 'unknown'
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/scan-deps
+        with:
+          language:             ${{ needs.detect.outputs.language }}
+          app_path:             ${{ inputs.app_path }}
+          severity:             ${{ inputs.severity }}
+          fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}
+
+  # ── 4. Build & push ──────────────────────────────────────────
+  build-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    needs: [detect, code-scan, dep-scan]
+    if: |
+      always() &&
+      (needs.code-scan.result == 'success' || needs.code-scan.result == 'skipped') &&
+      (needs.dep-scan.result  == 'success' || needs.dep-scan.result  == 'skipped')
+    permissions:
+      contents:     read
+      packages:     write
+      id-token:     write
+      attestations: write
+    outputs:
+      digest:    ${{ steps.push.outputs.digest }}
+      image_uri: ${{ steps.uri.outputs.value }}
+      tags:      ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: ./.github/actions/registry-login
+        with:
+          registry_type:        ${{ inputs.registry_type }}
+          registry_url:         ${{ inputs.registry_url }}
+          username:             ${{ secrets.AZURE_CLIENT_ID || secrets.REGISTRY_USERNAME }}
+          password:             ${{ secrets.AZURE_CLIENT_SECRET || secrets.REGISTRY_PASSWORD }}
+          azure_tenant_id:      ${{ secrets.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Compute registry prefix
+        id: reg
+        shell: bash
+        run: |
+          NS="${{ inputs.registry_namespace }}"
+          NS="${NS:+/$NS}"
+          case "${{ inputs.registry_type }}" in
+            ghcr)   echo "prefix=ghcr.io/${{ github.repository_owner }}${NS}" >> "$GITHUB_OUTPUT" ;;
+            acr|harbor) echo "prefix=${{ inputs.registry_url }}${NS}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=ref,event=pr,prefix=pr-
+            type=semver,pattern={{version}}
+            ${{ inputs.extra_tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            com.pipeline.language=${{ needs.detect.outputs.language }}
+
+      - uses: docker/build-push-action@v6
+        id: push
+        with:
+          context:    ${{ inputs.context }}
+          file:       ${{ inputs.dockerfile }}
+          platforms:  ${{ inputs.platforms }}
+          push:       true
+          tags:       ${{ steps.meta.outputs.tags }}
+          labels:     ${{ steps.meta.outputs.labels }}
+          build-args: ${{ inputs.build_args }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          provenance: true
+          sbom:       true
+
+      - name: Compute image URI
+        id: uri
+        shell: bash
+        run: |
+          BASE=$(echo "${{ steps.meta.outputs.tags }}" | head -1 | cut -d: -f1)
+          echo "value=${BASE}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-name:     ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
+          subject-digest:   ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ── 5. Image vulnerability scan ──────────────────────────────
+  image-scan:
+    name: Image Scan
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: inputs.enable_image_scan && needs.build-push.result == 'success'
+    permissions:
+      contents:        read
+      security-events: write
+      packages:        read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/registry-login
+        with:
+          registry_type: ${{ inputs.registry_type }}
+          registry_url:  ${{ inputs.registry_url }}
+          username:      ${{ secrets.AZURE_CLIENT_ID || secrets.REGISTRY_USERNAME }}
+          password:      ${{ secrets.AZURE_CLIENT_SECRET || secrets.REGISTRY_PASSWORD }}
+      - uses: ./.github/actions/scan-image
+        with:
+          image_uri:             ${{ needs.build-push.outputs.image_uri }}
+          severity:              ${{ inputs.severity }}
+          fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}
+
+  # ── 6. Sign image ────────────────────────────────────────────
+  sign:
+    name: "Sign · ${{ inputs.signing_mode }}"
+    runs-on: ubuntu-latest
+    needs: [detect, build-push, image-scan]
+    if: |
+      inputs.enable_signing &&
+      needs.build-push.result == 'success' &&
+      (needs.image-scan.result == 'success' || needs.image-scan.result == 'skipped')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/registry-login
+        with:
+          registry_type:        ${{ inputs.registry_type }}
+          registry_url:         ${{ inputs.registry_url }}
+          username:             ${{ secrets.AZURE_CLIENT_ID || secrets.REGISTRY_USERNAME }}
+          password:             ${{ secrets.AZURE_CLIENT_SECRET || secrets.REGISTRY_PASSWORD }}
+          azure_tenant_id:      ${{ secrets.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: ./.github/actions/sign-image
+        with:
+          image_uri:          ${{ needs.build-push.outputs.image_uri }}
+          signing_mode:       ${{ inputs.signing_mode }}
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          cosign_password:    ${{ secrets.COSIGN_PASSWORD }}
+          language:           ${{ needs.detect.outputs.language }}

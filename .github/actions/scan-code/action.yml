@@ -1,0 +1,48 @@
+name: SAST Code Scan
+description: "Semgrep scan with language-specific rulesets — uploads SARIF to GitHub Security"
+
+inputs:
+  language:
+    description: "python | node | unknown"
+    required: true
+  semgrep_token:
+    description: "Semgrep Cloud token (optional — OSS rules used if absent)"
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Semgrep · Python
+      if: inputs.language == 'python'
+      uses: semgrep/semgrep-action@v1
+      with:
+        config: p/python p/flask p/django p/bandit p/secrets p/owasp-top-ten
+        generateSarif: "1"
+      env:
+        SEMGREP_APP_TOKEN: ${{ inputs.semgrep_token }}
+
+    - name: Semgrep · Node
+      if: inputs.language == 'node'
+      uses: semgrep/semgrep-action@v1
+      with:
+        config: p/javascript p/typescript p/nodejs p/react p/secrets p/owasp-top-ten
+        generateSarif: "1"
+      env:
+        SEMGREP_APP_TOKEN: ${{ inputs.semgrep_token }}
+
+    - name: Semgrep · Generic (fallback)
+      if: inputs.language == 'unknown'
+      uses: semgrep/semgrep-action@v1
+      with:
+        config: p/default p/secrets
+        generateSarif: "1"
+      env:
+        SEMGREP_APP_TOKEN: ${{ inputs.semgrep_token }}
+
+    - name: Upload SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: semgrep.sarif
+        category:   semgrep-sast
+      continue-on-error: true

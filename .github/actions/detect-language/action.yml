@@ -1,0 +1,38 @@
+name: Detect Language
+description: "Auto-detect python or node from lockfiles, or use explicit input"
+
+inputs:
+  language:
+    description: "python | node | auto"
+    default: "auto"
+  app_path:
+    description: "Directory to inspect"
+    default: "."
+
+outputs:
+  language:
+    description: "Resolved language (python | node | unknown)"
+    value: ${{ steps.detect.outputs.language }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        LANG="${{ inputs.language }}"
+        if [ "$LANG" != "auto" ]; then
+          echo "language=$LANG" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -f requirements.txt ] || [ -f pyproject.toml ] || \
+           [ -f Pipfile.lock ]     || [ -f poetry.lock ]; then
+          echo "language=python" >> "$GITHUB_OUTPUT"
+        elif [ -f package-lock.json ] || [ -f yarn.lock ] || \
+             [ -f pnpm-lock.yaml ]    || [ -f package.json ]; then
+          echo "language=node" >> "$GITHUB_OUTPUT"
+        else
+          echo "language=unknown" >> "$GITHUB_OUTPUT"
+          echo "::warning::Language not detected — set input 'language' explicitly"
+        fi

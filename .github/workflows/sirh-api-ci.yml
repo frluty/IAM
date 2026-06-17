@@ -1,30 +1,17 @@
-# ================================================================
-#  CI — SIRH API (Python · FastAPI)
-#  Caller example for the reusable security pipeline
-# ================================================================
 name: CI — SIRH API (Python)
 
 on:
   push:
     branches: [main, develop]
-    paths:
-      - "services/sirh-api/**"
-      - ".github/workflows/sirh-api-ci.yml"
+    paths: ["services/sirh-api/**", ".github/workflows/sirh-api-ci.yml"]
   pull_request:
     branches: [main, develop]
-    paths:
-      - "services/sirh-api/**"
+    paths: ["services/sirh-api/**"]
   workflow_dispatch:
-    inputs:
-      registry_type:
-        description: "Target registry (ghcr | acr | harbor)"
-        required: false
-        default: "ghcr"
 
 jobs:
   pipeline:
-    name: Security Pipeline
-    uses: ./.github/workflows/reusable-docker-security.yml
+    uses: ./.github/workflows/reusable-security.yml
     permissions:
       contents:        read
       packages:        write
@@ -32,26 +19,15 @@ jobs:
       id-token:        write
       attestations:    write
     with:
-      language:     python
-      app_path:     services/sirh-api
-      image_name:   sirh-api
-      dockerfile:   services/sirh-api/Dockerfile
-      context:      services/sirh-api
-      platforms:    linux/amd64
-      registry_type: ${{ github.event.inputs.registry_type || 'ghcr' }}
-      # registry_url: myacr.azurecr.io   # uncomment for acr or harbor
-      enable_code_scan:      true
-      enable_dep_scan:       true
-      enable_image_scan:     true
+      language:              python
+      app_path:              services/sirh-api
+      image_name:            sirh-api
+      dockerfile:            services/sirh-api/Dockerfile
+      context:               services/sirh-api
+      registry_type:         ghcr
       enable_signing:        ${{ github.event_name != 'pull_request' }}
       signing_mode:          keyless
-      scan_severity:         CRITICAL,HIGH
+      severity:              CRITICAL,HIGH
       fail_on_vulnerability: true
     secrets:
-      # GHCR — no secrets needed (GITHUB_TOKEN is automatic)
-      # AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
-      # AZURE_CLIENT_SECRET:   ${{ secrets.AZURE_CLIENT_SECRET }}
-      # AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
-      # REGISTRY_USERNAME:     ${{ secrets.HARBOR_USER }}
-      # REGISTRY_PASSWORD:     ${{ secrets.HARBOR_PASSWORD }}
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}

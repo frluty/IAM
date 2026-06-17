@@ -1,0 +1,95 @@
+name: Dependency Scan
+description: "pip-audit (Python) or npm audit (Node) + Trivy FS lockfile scan"
+
+inputs:
+  language:
+    description: "python | node"
+    required: true
+  app_path:
+    description: "Application directory"
+    default: "."
+  severity:
+    description: "Trivy severity filter"
+    default: "CRITICAL,HIGH"
+  fail_on_vulnerability:
+    description: "'true' to exit non-zero on findings"
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+
+    # ── Python — pip-audit ──────────────────────────────────
+    - name: Setup Python
+      if: inputs.language == 'python'
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: pip-audit
+      if: inputs.language == 'python'
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        pip install pip-audit --quiet
+        if   [ -f requirements.txt ]; then ARGS="-r requirements.txt"
+        elif [ -f pyproject.toml ];   then ARGS="."
+        else ARGS=""; fi
+        pip-audit $ARGS --format sarif --output pip-audit.sarif --progress-spinner off || true
+        pip-audit $ARGS --progress-spinner off \
+          ${{ inputs.fail_on_vulnerability == 'true' && '|| exit 1' || '|| true' }}
+
+    - name: Upload pip-audit SARIF
+      if: inputs.language == 'python' && always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.app_path }}/pip-audit.sarif
+        category:   pip-audit
+      continue-on-error: true
+
+    # ── Node — npm audit ────────────────────────────────────
+    - name: Setup Node
+      if: inputs.language == 'node'
+      uses: actions/setup-node@v4
+      with:
+        node-version: "lts/*"
+
+    - name: npm audit
+      if: inputs.language == 'node'
+      shell: bash
+      working-directory: ${{ inputs.app_path }}
+      run: |
+        if   [ -f package-lock.json ]; then npm ci --ignore-scripts
+        elif [ -f yarn.lock ];         then yarn install --frozen-lockfile
+        else npm install --ignore-scripts; fi
+        npm audit --json > npm-audit.json 2>&1 || true
+        npm audit --audit-level=${{ inputs.fail_on_vulnerability == 'true' && 'high' || 'none' }}
+
+    - name: Upload npm-audit report
+      if: inputs.language == 'node' && always()
+      uses: actions/upload-artifact@v4
+      with:
+        name:           npm-audit-${{ github.run_id }}
+        path:           ${{ inputs.app_path }}/npm-audit.json
+        retention-days: 30
+
+    # ── Trivy FS — lockfile scan (both languages) ───────────
+    - name: Trivy · FS lockfile scan
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type:    fs
+        scan-ref:     ${{ inputs.app_path }}
+        scanners:     vuln,secret
+        format:       sarif
+        output:       trivy-fs.sarif
+        severity:     ${{ inputs.severity }}
+        exit-code:    ${{ inputs.fail_on_vulnerability == 'true' && '1' || '0' }}
+        trivyignores: .trivyignore
+
+    - name: Upload Trivy FS SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-fs.sarif
+        category:   trivy-fs
+      continue-on-error: true

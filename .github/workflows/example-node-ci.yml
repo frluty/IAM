@@ -1,25 +1,17 @@
-# ================================================================
-#  CI — Node.js service (example caller)
-#  Replace <service-name> with your actual service folder.
-# ================================================================
 name: CI — Node Service (example)
 
 on:
   push:
     branches: [main, develop]
-    paths:
-      - "services/<service-name>/**"
-      - ".github/workflows/example-node-ci.yml"
+    paths: ["services/<service-name>/**"]
   pull_request:
     branches: [main, develop]
-    paths:
-      - "services/<service-name>/**"
+    paths: ["services/<service-name>/**"]
   workflow_dispatch:
 
 jobs:
   pipeline:
-    name: Security Pipeline
-    uses: ./.github/workflows/reusable-docker-security.yml
+    uses: ./.github/workflows/reusable-security.yml
     permissions:
       contents:        read
       packages:        write
@@ -27,20 +19,16 @@ jobs:
       id-token:        write
       attestations:    write
     with:
-      language:     node
-      app_path:     services/<service-name>
-      image_name:   <service-name>
-      dockerfile:   services/<service-name>/Dockerfile
-      context:      services/<service-name>
-      platforms:    linux/amd64
-      registry_type: ghcr
-      # registry_url: myacr.azurecr.io
-      enable_code_scan:      true
-      enable_dep_scan:       true
-      enable_image_scan:     true
+      language:              node
+      app_path:              services/<service-name>
+      image_name:            <service-name>
+      dockerfile:            services/<service-name>/Dockerfile
+      context:               services/<service-name>
+      registry_type:         ghcr
+      # registry_url:        myacr.azurecr.io
       enable_signing:        ${{ github.event_name != 'pull_request' }}
       signing_mode:          keyless
-      scan_severity:         CRITICAL,HIGH
+      severity:              CRITICAL,HIGH
       fail_on_vulnerability: true
     secrets:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
