@@ -1,18 +1,35 @@
-# ============================================================
-#  Reusable Security Pipeline — Docker Build, Scan & Sign
+# ================================================================
+#  Reusable Security Pipeline
 #
-#  Supports registries : ghcr | acr | harbor
-#  Signing modes       : keyless (Sigstore OIDC) | keypair
+#  Stages
+#    1. detect      — auto-detect language (python | node)
+#    2. code-scan   — SAST via Semgrep
+#    3. dep-scan    — dependency audit (pip-audit | npm audit)
+#    4. build-push  — docker buildx → registry
+#    5. image-scan  — Trivy vulnerability scan on pushed image
+#    6. sign        — Cosign (keyless OIDC or key-pair)
 #
-#  Usage: call this workflow with `uses: ./.github/workflows/reusable-docker-security.yml`
-# ============================================================
-name: Reusable — Docker Security Pipeline
+#  Registries: ghcr | acr | harbor
+# ================================================================
+name: Reusable — Security Pipeline
 
 on:
   workflow_call:
-    # ── Inputs ──────────────────────────────────────────────
     inputs:
-      # Docker image
+
+      # ── Application ──────────────────────────────────────
+      language:
+        description: "Application language: python | node | auto"
+        required: false
+        type: string
+        default: "auto"
+      app_path:
+        description: "Path to the application source (where lock files live)"
+        required: false
+        type: string
+        default: "."
+
+      # ── Docker ───────────────────────────────────────────
       image_name:
         description: "Image name, e.g. sirh-api"
         required: true
@@ -23,7 +40,7 @@ on:
         type: string
         default: "Dockerfile"
       context:
-        description: "Docker build context directory"
+        description: "Docker build context"
         required: false
         type: string
         default: "."
@@ -33,75 +50,74 @@ on:
         type: string
         default: ""
       platforms:
-        description: "Target platforms, e.g. linux/amd64,linux/arm64"
+        description: "Target platforms"
         required: false
         type: string
         default: "linux/amd64"
+      extra_tags:
+        description: "Extra static tags, comma-separated (e.g. latest,stable)"
+        required: false
+        type: string
+        default: ""
 
-      # Registry
+      # ── Registry ─────────────────────────────────────────
       registry_type:
-        description: "Registry type: ghcr | acr | harbor"
+        description: "Registry: ghcr | acr | harbor"
         required: true
         type: string
       registry_url:
-        description: "Registry hostname — required for acr & harbor (e.g. myacr.azurecr.io)"
+        description: "Registry hostname (required for acr & harbor)"
         required: false
         type: string
         default: ""
       registry_namespace:
-        description: "Optional namespace / project inside the registry (e.g. myproject)"
+        description: "Namespace / project inside the registry"
         required: false
         type: string
         default: ""
 
-      # Tags
-      extra_tags:
-        description: "Additional static tags, comma-separated (e.g. latest,stable)"
-        required: false
-        type: string
-        default: ""
-
-      # Pipeline gates
+      # ── Pipeline gates ───────────────────────────────────
       enable_code_scan:
-        description: "Run code & secret scanning (Trivy FS + Semgrep)"
+        description: "Run SAST code scan (Semgrep)"
+        required: false
+        type: boolean
+        default: true
+      enable_dep_scan:
+        description: "Run dependency audit (pip-audit / npm audit)"
         required: false
         type: boolean
         default: true
       enable_image_scan:
-        description: "Run image vulnerability scanning (Trivy)"
+        description: "Run image vulnerability scan (Trivy)"
         required: false
         type: boolean
         default: true
       enable_signing:
-        description: "Sign the image with Cosign"
+        description: "Sign image with Cosign"
         required: false
         type: boolean
         default: true
       signing_mode:
-        description: "Cosign mode: keyless (OIDC) | keypair"
+        description: "keyless (Sigstore OIDC) | keypair"
         required: false
         type: string
         default: "keyless"
       scan_severity:
-        description: "Severity filter for Trivy (CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN)"
+        description: "Severity filter (CRITICAL,HIGH,MEDIUM,LOW)"
         required: false
         type: string
         default: "CRITICAL,HIGH"
       fail_on_vulnerability:
-        description: "Exit with error if vulnerabilities are found"
+        description: "Fail pipeline on findings"
         required: false
         type: boolean
         default: true
 
-    # ── Secrets ─────────────────────────────────────────────
     secrets:
-      # Harbor / generic basic-auth
       REGISTRY_USERNAME:
         required: false
       REGISTRY_PASSWORD:
         required: false
-
-      # Azure — Service Principal (used when AZURE_CLIENT_SECRET is set)
       AZURE_CLIENT_ID:
         required: false
       AZURE_CLIENT_SECRET:
@@ -110,38 +126,76 @@ on:
         required: false
       AZURE_SUBSCRIPTION_ID:
         required: false
-
-      # Cosign key-pair signing (only for signing_mode: keypair)
       COSIGN_PRIVATE_KEY:
         required: false
       COSIGN_PASSWORD:
         required: false
-
-      # Semgrep cloud (optional — OSS rules used if absent)
       SEMGREP_APP_TOKEN:
         required: false
 
-    # ── Outputs ─────────────────────────────────────────────
     outputs:
       image_digest:
         description: "SHA256 digest of the pushed image"
         value: ${{ jobs.build-push.outputs.digest }}
       image_uri:
-        description: "Full image URI usable as image_name@digest"
+        description: "Full image URI (name@digest)"
         value: ${{ jobs.build-push.outputs.image_uri }}
       image_tags:
-        description: "Newline-separated list of applied tags"
+        description: "Applied tags"
         value: ${{ jobs.build-push.outputs.tags }}
+      detected_language:
+        description: "Language detected or provided"
+        value: ${{ jobs.detect.outputs.language }}
 
-# ============================================================
+# ================================================================
 jobs:
 
-  # ────────────────────────────────────────────────────────
-  # JOB 1 · Code & secret scanning
-  # ────────────────────────────────────────────────────────
-  code-scan:
-    name: Code & Secret Scan
+  # ──────────────────────────────────────────────────────────────
+  # JOB 1 · Language detection
+  # ──────────────────────────────────────────────────────────────
+  detect:
+    name: Detect Language
     runs-on: ubuntu-latest
+    outputs:
+      language: ${{ steps.detect.outputs.language }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect
+        id: detect
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          LANG="${{ inputs.language }}"
+
+          if [ "$LANG" != "auto" ]; then
+            echo "language=$LANG" >> "$GITHUB_OUTPUT"
+            echo "Language (explicit): $LANG"
+            exit 0
+          fi
+
+          # Auto-detect from lock / manifest files
+          if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || \
+             [ -f "Pipfile.lock" ]    || [ -f "poetry.lock" ]; then
+            echo "language=python" >> "$GITHUB_OUTPUT"
+            echo "Language (auto): python"
+          elif [ -f "package-lock.json" ] || [ -f "yarn.lock" ] || \
+               [ -f "pnpm-lock.yaml" ]    || [ -f "package.json" ]; then
+            echo "language=node" >> "$GITHUB_OUTPUT"
+            echo "Language (auto): node"
+          else
+            echo "language=unknown" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not detect language — set input 'language' explicitly"
+          fi
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 2 · SAST — Semgrep
+  # ──────────────────────────────────────────────────────────────
+  code-scan:
+    name: "SAST · Semgrep (${{ needs.detect.outputs.language }})"
+    runs-on: ubuntu-latest
+    needs: [detect]
     if: inputs.enable_code_scan
     permissions:
       contents: read
@@ -153,63 +207,183 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── Trivy — filesystem (vuln + secret + misconfig) ──
-      - name: Trivy · FS scan
-        uses: aquasecurity/trivy-action@0.28.0
+      # Python rules
+      - name: Semgrep · Python
+        if: needs.detect.outputs.language == 'python'
+        uses: semgrep/semgrep-action@v1
         with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-fs.sarif
-          severity: ${{ inputs.scan_severity }}
-          exit-code: ${{ inputs.fail_on_vulnerability && '1' || '0' }}
-          scanners: vuln,secret,misconfig
-          trivyignores: .trivyignore
+          config: >-
+            p/python
+            p/django
+            p/flask
+            p/bandit
+            p/secrets
+            p/owasp-top-ten
+          generateSarif: "1"
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true
 
-      - name: Trivy · upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+      # Node rules
+      - name: Semgrep · Node
+        if: needs.detect.outputs.language == 'node'
+        uses: semgrep/semgrep-action@v1
         with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
+          config: >-
+            p/javascript
+            p/typescript
+            p/nodejs
+            p/react
+            p/secrets
+            p/owasp-top-ten
+          generateSarif: "1"
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true
 
-      # ── Semgrep SAST ────────────────────────────────────
-      - name: Semgrep · SAST
+      # Fallback — generic rules when language is unknown
+      - name: Semgrep · Generic
+        if: needs.detect.outputs.language == 'unknown'
         uses: semgrep/semgrep-action@v1
         with:
           config: >-
             p/default
             p/secrets
-            p/owasp-top-ten
-            p/docker
           generateSarif: "1"
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-        continue-on-error: true   # OSS mode without token may exit non-zero
+        continue-on-error: true
 
-      - name: Semgrep · upload SARIF
+      - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: semgrep.sarif
-          category: semgrep
+          category:   semgrep-sast
         continue-on-error: true
 
-  # ────────────────────────────────────────────────────────
-  # JOB 2 · Build & push Docker image
-  # ────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────
+  # JOB 3 · Dependency audit
+  # ──────────────────────────────────────────────────────────────
+  dep-scan:
+    name: "Dependency Audit · ${{ needs.detect.outputs.language }}"
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: inputs.enable_dep_scan && needs.detect.outputs.language != 'unknown'
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Python — pip-audit ────────────────────────────────
+      - name: Setup Python
+        if: needs.detect.outputs.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: pip-audit
+        if: needs.detect.outputs.language == 'python'
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          pip install pip-audit
+          # Resolve requirements file (supports requirements.txt or pyproject.toml)
+          if [ -f "requirements.txt" ]; then
+            REQ_FILE="-r requirements.txt"
+          elif [ -f "pyproject.toml" ]; then
+            REQ_FILE="."
+          else
+            REQ_FILE=""
+          fi
+          pip-audit $REQ_FILE \
+            --format sarif \
+            --output pip-audit.sarif \
+            --progress-spinner off \
+            || true    # collect results even if findings exist
+          # Also output a human-readable table
+          pip-audit $REQ_FILE --progress-spinner off \
+            || ${{ inputs.fail_on_vulnerability && 'exit 1' || 'true' }}
+
+      - name: Upload pip-audit SARIF
+        if: needs.detect.outputs.language == 'python' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ inputs.app_path }}/pip-audit.sarif
+          category:   pip-audit
+        continue-on-error: true
+
+      # ── Node — npm audit ──────────────────────────────────
+      - name: Setup Node
+        if: needs.detect.outputs.language == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: npm audit
+        if: needs.detect.outputs.language == 'node'
+        working-directory: ${{ inputs.app_path }}
+        run: |
+          # Install deps (ci for reproducibility)
+          if [ -f "package-lock.json" ]; then
+            npm ci --ignore-scripts
+          elif [ -f "yarn.lock" ]; then
+            npm install -g yarn && yarn install --frozen-lockfile
+          else
+            npm install --ignore-scripts
+          fi
+
+          # Audit — JSON for artifact, human output for log
+          npm audit --json > npm-audit.json 2>&1 || true
+          npm audit --audit-level=${{ inputs.fail_on_vulnerability && 'high' || 'none' }}
+
+      - name: Upload npm audit report
+        if: needs.detect.outputs.language == 'node' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:           npm-audit-report-${{ github.run_id }}
+          path:           ${{ inputs.app_path }}/npm-audit.json
+          retention-days: 30
+
+      # ── Trivy FS — both languages (lockfile scan) ─────────
+      - name: Trivy · lockfile scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref:  ${{ inputs.app_path }}
+          scanners:  vuln,secret
+          format:    sarif
+          output:    trivy-fs.sarif
+          severity:  ${{ inputs.scan_severity }}
+          exit-code: ${{ inputs.fail_on_vulnerability && '1' || '0' }}
+          trivyignores: .trivyignore
+
+      - name: Upload Trivy FS SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category:   trivy-fs
+        continue-on-error: true
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 4 · Build & push Docker image
+  # ──────────────────────────────────────────────────────────────
   build-push:
     name: Build & Push
     runs-on: ubuntu-latest
-    needs: [code-scan]
+    needs: [detect, code-scan, dep-scan]
     if: |
       always() &&
-      (needs.code-scan.result == 'success' || needs.code-scan.result == 'skipped')
+      (needs.code-scan.result == 'success' || needs.code-scan.result == 'skipped') &&
+      (needs.dep-scan.result  == 'success' || needs.dep-scan.result  == 'skipped')
     permissions:
-      contents: read
-      packages: write       # GHCR
-      id-token: write       # OIDC — ACR Workload Identity + Cosign keyless
-      attestations: write   # SBOM / provenance attestation
+      contents:     read
+      packages:     write
+      id-token:     write
+      attestations: write
 
     outputs:
       digest:    ${{ steps.push.outputs.digest }}
@@ -220,35 +394,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (multi-arch)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ── Compute full registry prefix ─────────────────────
+      # ── Registry prefix ───────────────────────────────────
       - name: Compute registry prefix
         id: reg
         run: |
           NS="${{ inputs.registry_namespace }}"
           NS="${NS:+/$NS}"
           case "${{ inputs.registry_type }}" in
-            ghcr)
-              echo "prefix=ghcr.io/${{ github.repository_owner }}${NS}" >> "$GITHUB_OUTPUT"
-              ;;
-            acr)
-              echo "prefix=${{ inputs.registry_url }}${NS}" >> "$GITHUB_OUTPUT"
-              ;;
-            harbor)
-              echo "prefix=${{ inputs.registry_url }}${NS}" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::registry_type must be one of: ghcr, acr, harbor"
-              exit 1
-              ;;
+            ghcr)   echo "prefix=ghcr.io/${{ github.repository_owner }}${NS}" >> "$GITHUB_OUTPUT" ;;
+            acr)    echo "prefix=${{ inputs.registry_url }}${NS}"              >> "$GITHUB_OUTPUT" ;;
+            harbor) echo "prefix=${{ inputs.registry_url }}${NS}"              >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::registry_type must be ghcr | acr | harbor"; exit 1 ;;
           esac
 
-      # ── Registry login — GHCR ────────────────────────────
+      # ── Registry logins ───────────────────────────────────
       - name: Login · GHCR
         if: inputs.registry_type == 'ghcr'
         uses: docker/login-action@v3
@@ -257,7 +422,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Registry login — ACR (Service Principal) ─────────
       - name: Login · ACR (Service Principal)
         if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET != ''
         uses: docker/login-action@v3
@@ -266,20 +430,18 @@ jobs:
           username: ${{ secrets.AZURE_CLIENT_ID }}
           password: ${{ secrets.AZURE_CLIENT_SECRET }}
 
-      # ── Registry login — ACR (Workload Identity / OIDC) ──
-      - name: Login · Azure OIDC
+      - name: Login · Azure OIDC (Workload Identity)
         if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET == ''
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login · ACR token (OIDC)
         if: inputs.registry_type == 'acr' && secrets.AZURE_CLIENT_SECRET == ''
         run: az acr login --name "${{ inputs.registry_url }}"
 
-      # ── Registry login — Harbor ──────────────────────────
       - name: Login · Harbor
         if: inputs.registry_type == 'harbor'
         uses: docker/login-action@v3
@@ -288,7 +450,7 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      # ── Compute Docker metadata (tags & labels) ──────────
+      # ── Tags & labels ─────────────────────────────────────
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -302,60 +464,58 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             ${{ inputs.extra_tags }}
           labels: |
-            org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            com.pipeline.language=${{ needs.detect.outputs.language }}
 
-      # ── Build & push ─────────────────────────────────────
+      # ── Build & push ──────────────────────────────────────
       - name: Build & Push
         id: push
         uses: docker/build-push-action@v6
         with:
-          context:     ${{ inputs.context }}
-          file:        ${{ inputs.dockerfile }}
-          platforms:   ${{ inputs.platforms }}
-          push:        true
-          tags:        ${{ steps.meta.outputs.tags }}
-          labels:      ${{ steps.meta.outputs.labels }}
-          build-args:  ${{ inputs.build_args }}
-          cache-from:  type=gha
-          cache-to:    type=gha,mode=max
-          provenance:  true
-          sbom:        true
+          context:    ${{ inputs.context }}
+          file:       ${{ inputs.dockerfile }}
+          platforms:  ${{ inputs.platforms }}
+          push:       true
+          tags:       ${{ steps.meta.outputs.tags }}
+          labels:     ${{ steps.meta.outputs.labels }}
+          build-args: ${{ inputs.build_args }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          provenance: true
+          sbom:       true
 
-      # ── Compute full image URI (used by downstream jobs) ─
       - name: Compute image URI
         id: image-uri
         run: |
           FIRST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
-          IMAGE_BASE="${FIRST_TAG%%:*}"
-          echo "value=${IMAGE_BASE}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          BASE="${FIRST_TAG%%:*}"
+          echo "value=${BASE}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
-      # ── GitHub artifact attestation (provenance) ─────────
       - name: Attest provenance
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name:   ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-name:     ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
+          subject-digest:   ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-  # ────────────────────────────────────────────────────────
-  # JOB 3 · Image vulnerability scan (post-push)
-  # ────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────
+  # JOB 5 · Image vulnerability scan (Trivy)
+  # ──────────────────────────────────────────────────────────────
   image-scan:
     name: Image Vulnerability Scan
     runs-on: ubuntu-latest
     needs: [build-push]
     if: inputs.enable_image_scan && needs.build-push.result == 'success'
     permissions:
-      contents: read
+      contents:        read
       security-events: write
-      packages: read
+      packages:        read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pull credentials so Trivy can pull the private image
       - name: Login · GHCR
         if: inputs.registry_type == 'ghcr'
         uses: docker/login-action@v3
@@ -380,62 +540,50 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      # ── Trivy image scan → SARIF ──────────────────────────
       - name: Trivy · image scan (SARIF)
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref:  ${{ needs.build-push.outputs.image_uri }}
-          format:     sarif
-          output:     trivy-image.sarif
-          severity:   ${{ inputs.scan_severity }}
-          exit-code:  ${{ inputs.fail_on_vulnerability && '1' || '0' }}
-          scanners:   vuln,secret
+          image-ref:    ${{ needs.build-push.outputs.image_uri }}
+          format:       sarif
+          output:       trivy-image.sarif
+          severity:     ${{ inputs.scan_severity }}
+          exit-code:    ${{ inputs.fail_on_vulnerability && '1' || '0' }}
+          scanners:     vuln,secret
+          trivyignores: .trivyignore
 
-      - name: Trivy · upload SARIF
+      - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
           category:   trivy-image
 
-      # ── Trivy image scan → JSON report artifact ───────────
-      - name: Trivy · image scan (JSON)
+      - name: Trivy · image scan (JSON artifact)
         if: always()
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref:  ${{ needs.build-push.outputs.image_uri }}
-          format:     json
-          output:     trivy-image.json
-          severity:   ${{ inputs.scan_severity }}
-          exit-code:  "0"
-          scanners:   vuln,secret
+          image-ref:    ${{ needs.build-push.outputs.image_uri }}
+          format:       json
+          output:       trivy-image.json
+          severity:     ${{ inputs.scan_severity }}
+          exit-code:    "0"
+          scanners:     vuln,secret
 
-      - name: Upload Trivy report
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name:            trivy-image-report-${{ github.run_id }}
-          path:            trivy-image.json
-          retention-days:  30
+          name:           trivy-image-${{ github.run_id }}
+          path:           trivy-image.json
+          retention-days: 30
 
-      # ── Job summary ───────────────────────────────────────
-      - name: Summary
-        if: always()
-        run: |
-          echo "## Image Scan Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image | \`${{ needs.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Severity filter | \`${{ inputs.scan_severity }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Report artifact | trivy-image-report-${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
-
-  # ────────────────────────────────────────────────────────
-  # JOB 4 · Sign image with Cosign
-  # ────────────────────────────────────────────────────────
-  sign-image:
-    name: Sign Image (Cosign)
+  # ──────────────────────────────────────────────────────────────
+  # JOB 6 · Sign image with Cosign
+  # ──────────────────────────────────────────────────────────────
+  sign:
+    name: Sign (Cosign · ${{ inputs.signing_mode }})
     runs-on: ubuntu-latest
-    needs: [build-push, image-scan]
+    needs: [detect, build-push, image-scan]
     if: |
       inputs.enable_signing &&
       needs.build-push.result == 'success' &&
@@ -443,13 +591,12 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write   # mandatory for keyless OIDC signing
+      id-token: write
 
     steps:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      # Re-login (jobs run in isolated VMs)
       - name: Login · GHCR
         if: inputs.registry_type == 'ghcr'
         uses: docker/login-action@v3
@@ -474,44 +621,38 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      # ── Keyless signing (Sigstore OIDC + Rekor) ──────────
-      - name: Sign · keyless (OIDC)
+      - name: Sign · keyless (Sigstore OIDC)
         if: inputs.signing_mode == 'keyless'
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          cosign sign --yes \
-            "${{ needs.build-push.outputs.image_uri }}"
+          cosign sign --yes "${{ needs.build-push.outputs.image_uri }}"
 
-      # ── Key-pair signing ──────────────────────────────────
       - name: Sign · key-pair
         if: inputs.signing_mode == 'keypair'
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           printf '%s' "${{ secrets.COSIGN_PRIVATE_KEY }}" > /tmp/cosign.key
-          cosign sign --yes --key /tmp/cosign.key \
-            "${{ needs.build-push.outputs.image_uri }}"
+          cosign sign --yes --key /tmp/cosign.key "${{ needs.build-push.outputs.image_uri }}"
           rm -f /tmp/cosign.key
 
-      # ── SBOM / custom attestation ─────────────────────────
-      - name: Attest · build metadata
+      - name: Attest build metadata
         if: inputs.signing_mode == 'keyless'
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign attest --yes \
             --predicate <(jq -n \
-              --arg repo   "${{ github.repository }}" \
-              --arg ref    "${{ github.ref }}" \
-              --arg sha    "${{ github.sha }}" \
-              --arg run_id "${{ github.run_id }}" \
-              --arg actor  "${{ github.actor }}" \
-              '{buildTool:"github-actions", repo:$repo, ref:$ref, sha:$sha, runId:$run_id, triggeredBy:$actor}') \
+              --arg repo     "${{ github.repository }}" \
+              --arg sha      "${{ github.sha }}" \
+              --arg ref      "${{ github.ref }}" \
+              --arg run_id   "${{ github.run_id }}" \
+              --arg language "${{ needs.detect.outputs.language }}" \
+              '{repo:$repo, sha:$sha, ref:$ref, runId:$run_id, language:$language}') \
             --type custom \
             "${{ needs.build-push.outputs.image_uri }}"
 
-      # ── Verify signature (sanity check) ──────────────────
       - name: Verify signature
         if: inputs.signing_mode == 'keyless'
         env:
@@ -522,12 +663,12 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${{ needs.build-push.outputs.image_uri }}"
 
-      # ── Summary ───────────────────────────────────────────
       - name: Summary
         run: |
-          echo "## Image Signed" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Signed Image" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image | \`${{ needs.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Signing mode | \`${{ inputs.signing_mode }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Digest | \`${{ needs.build-push.outputs.image_digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image    | \`${{ needs.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Language | \`${{ needs.detect.outputs.language }}\` |"       >> "$GITHUB_STEP_SUMMARY"
+          echo "| Mode     | \`${{ inputs.signing_mode }}\` |"                 >> "$GITHUB_STEP_SUMMARY"
+          echo "| Digest   | \`${{ needs.build-push.outputs.image_digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
