@@ -1,5 +1,5 @@
 name: Image Vulnerability Scan
-description: "Trivy image scan — SARIF to GitHub Security + JSON artifact"
+description: "Trivy image scan (CVE) + Dockle CIS benchmark (ANSSI) — SARIF + JSON artifacts"
 
 inputs:
   image_uri:
@@ -11,6 +11,9 @@ inputs:
   fail_on_vulnerability:
     description: "'true' to exit non-zero on findings"
     default: "true"
+  dockle_ignore:
+    description: "Comma-separated Dockle codes to ignore (ex: CIS-DI-0010)"
+    default: ""
 
 runs:
   using: composite
@@ -51,4 +54,47 @@ runs:
       with:
         name:           trivy-image-${{ github.run_id }}
         path:           trivy-image.json
+        retention-days: 30
+
+    # ── Dockle — CIS Docker Benchmark (ANSSI-PA-022) ──────────
+    - name: Dockle · CIS Docker Benchmark
+      if: always()
+      shell: bash
+      env:
+        DOCKLE_IGNORE: ${{ inputs.dockle_ignore }}
+      run: |
+        # Téléchargement du binaire Dockle (dernière version)
+        DOCKLE_VERSION=$(curl -sSfL \
+          https://api.github.com/repos/goodwithtech/dockle/releases/latest \
+          | grep '"tag_name"' | cut -d'"' -f4)
+        DOCKLE_VER="${DOCKLE_VERSION#v}"
+
+        curl -sSfL \
+          "https://github.com/goodwithtech/dockle/releases/download/${DOCKLE_VERSION}/dockle_${DOCKLE_VER}_Linux-64bit.tar.gz" \
+          | tar -xzf - dockle
+        chmod +x dockle
+
+        # Construction des arguments d'ignore
+        IGNORE_ARGS=""
+        if [ -n "$DOCKLE_IGNORE" ]; then
+          for code in $(echo "$DOCKLE_IGNORE" | tr ',' ' '); do
+            IGNORE_ARGS="$IGNORE_ARGS --ignore $code"
+          done
+        fi
+
+        # Rapport JSON pour artifact
+        ./dockle --format json --output dockle.json $IGNORE_ARGS \
+          "${{ inputs.image_uri }}" 2>/dev/null || true
+
+        # Affichage tabulaire dans les logs + blocage si FATAL
+        ./dockle --format table $IGNORE_ARGS \
+          --exit-level fatal \
+          "${{ inputs.image_uri }}"
+
+    - name: Upload Dockle report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name:           dockle-report-${{ github.run_id }}
+        path:           dockle.json
         retention-days: 30

@@ -1,0 +1,180 @@
+name: Dockerfile Hardening Check (ANSSI)
+description: >
+  Hadolint (lint Dockerfile) + contrôles ANSSI-PA-022 personnalisés.
+  Références : R4, R5, R7, R8, R9, R14, R16, R19.
+
+inputs:
+  dockerfile:
+    description: "Chemin vers le Dockerfile"
+    required: true
+  hadolint_ignore:
+    description: "Règles Hadolint à ignorer, séparées par des virgules (ex: DL3008,DL3009)"
+    default: ""
+  fail_on_warning:
+    description: "'true' pour bloquer sur les avertissements (pas seulement les erreurs)"
+    default: "false"
+  dockerignore_path:
+    description: "Chemin vers .dockerignore (détection automatique si vide)"
+    default: ""
+
+runs:
+  using: composite
+  steps:
+
+    # ── 1. Hadolint — lint statique du Dockerfile ─────────────
+    - name: Hadolint · Dockerfile lint
+      uses: hadolint/hadolint-action@v3.1.0
+      with:
+        dockerfile:        ${{ inputs.dockerfile }}
+        ignore:            ${{ inputs.hadolint_ignore }}
+        failure-threshold: ${{ inputs.fail_on_warning == 'true' && 'warning' || 'error' }}
+        format:            sarif
+        output-file:       hadolint.sarif
+      continue-on-error: true
+
+    - name: Hadolint · upload SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: hadolint.sarif
+        category:   hadolint
+      continue-on-error: true
+
+    # ── 2. Contrôles ANSSI-PA-022 ─────────────────────────────
+    - name: ANSSI · vérifications Dockerfile
+      shell: bash
+      run: |
+        DOCKERFILE="${{ inputs.dockerfile }}"
+        DOCKERIGNORE="${{ inputs.dockerignore_path }}"
+        FAIL_ON_WARN="${{ inputs.fail_on_warning }}"
+        ERRORS=0
+        WARNINGS=0
+
+        err()  { echo "::error file=$DOCKERFILE::[$1] $2"; ERRORS=$((ERRORS+1)); }
+        warn() { echo "::warning file=$DOCKERFILE::[$1] $2"; WARNINGS=$((WARNINGS+1)); }
+        ok()   { echo "✅ [$1] $2"; }
+
+        echo ""
+        echo "══════════════════════════════════════════════════════"
+        echo "  ANSSI-PA-022 — Durcissement Dockerfile"
+        echo "  Fichier : $DOCKERFILE"
+        echo "══════════════════════════════════════════════════════"
+        echo ""
+
+        # ── R7 — Pas de tag :latest dans FROM ─────────────────
+        if grep -qE '^FROM [^:@]+:latest' "$DOCKERFILE" 2>/dev/null; then
+          err "ANSSI-R7" "Tag :latest détecté dans FROM — fixer une version ou un digest SHA256"
+        else
+          ok "ANSSI-R7" "Aucun tag :latest dans FROM"
+        fi
+
+        # ── R7 (renforcé) — Digest SHA256 dans FROM ───────────
+        if ! grep -qE '^FROM .+@sha256:[a-f0-9]{64}' "$DOCKERFILE" 2>/dev/null; then
+          warn "ANSSI-R7+" "Digest SHA256 recommandé dans FROM (immuabilité garantie)"
+        else
+          ok "ANSSI-R7+" "Digest SHA256 présent dans FROM"
+        fi
+
+        # ── R5 — Build multi-stage ─────────────────────────────
+        FROM_COUNT=$(grep -cE '^FROM ' "$DOCKERFILE" 2>/dev/null || echo 0)
+        if [ "$FROM_COUNT" -gt 1 ]; then
+          ok "ANSSI-R5" "Build multi-stage ($FROM_COUNT stages) — surface d'attaque réduite"
+        else
+          warn "ANSSI-R5" "Build mono-stage — multi-stage recommandé pour exclure les outils de build"
+        fi
+
+        # ── R4 — Image de base minimale ───────────────────────
+        BASE=$(grep -E '^FROM ' "$DOCKERFILE" | tail -1 | awk '{print $2}')
+        if echo "$BASE" | grep -qE '(distroless|scratch|alpine|slim)'; then
+          ok "ANSSI-R4" "Image de base minimale : $BASE"
+        else
+          warn "ANSSI-R4" "Image de base non minimale ($BASE) — préférer distroless, alpine ou slim"
+        fi
+
+        # ── R8 — Instruction USER (non root) ──────────────────
+        if ! grep -qE '^USER ' "$DOCKERFILE" 2>/dev/null; then
+          err "ANSSI-R8" "Instruction USER absente — le conteneur s'exécutera en root"
+        else
+          LAST_USER=$(grep -E '^USER ' "$DOCKERFILE" | tail -1 | awk '{print $2}')
+          if [[ "$LAST_USER" == "root" || "$LAST_USER" == "0" ]]; then
+            err "ANSSI-R8" "Dernier USER est root ($LAST_USER) — utiliser un utilisateur non-privilégié"
+          else
+            ok "ANSSI-R8" "Utilisateur non-root : $LAST_USER"
+          fi
+        fi
+
+        # ── R9 — Pas de sudo ──────────────────────────────────
+        if grep -qE '\bsudo\b' "$DOCKERFILE" 2>/dev/null; then
+          err "ANSSI-R9" "Commande sudo détectée — configurer les droits sans sudo"
+        else
+          ok "ANSSI-R9" "Aucun usage de sudo"
+        fi
+
+        # ── R14 — Pas de --privileged dans RUN ────────────────
+        if grep -qE '\-\-privileged' "$DOCKERFILE" 2>/dev/null; then
+          err "ANSSI-R14" "--privileged interdit — ne jamais l'utiliser en production"
+        else
+          ok "ANSSI-R14" "Pas de --privileged"
+        fi
+
+        # ── R19 — Pas de secrets en variables d'environnement ─
+        if grep -qEi '^ENV[[:space:]]+(PASSWORD|SECRET|KEY|TOKEN|CREDENTIAL|PRIVATE|API_KEY)' \
+           "$DOCKERFILE" 2>/dev/null; then
+          err "ANSSI-R19" "Secret potentiel dans ENV — utiliser Docker secrets ou un vault"
+        else
+          ok "ANSSI-R19" "Aucun secret détecté dans les instructions ENV"
+        fi
+
+        # ── Bonne pratique — COPY vs ADD ──────────────────────
+        if grep -qE '^ADD ' "$DOCKERFILE" 2>/dev/null; then
+          warn "BP-ADD" "Instruction ADD détectée — préférer COPY (sauf extraction d'archives)"
+        else
+          ok "BP-ADD" "COPY utilisé (pas d'ADD)"
+        fi
+
+        # ── R16 — HEALTHCHECK ─────────────────────────────────
+        if ! grep -qE '^HEALTHCHECK' "$DOCKERFILE" 2>/dev/null; then
+          warn "ANSSI-R16" "HEALTHCHECK absent — recommandé pour la résilience et la détection de pannes"
+        else
+          ok "ANSSI-R16" "HEALTHCHECK présent"
+        fi
+
+        # ── Bonne pratique — .dockerignore ────────────────────
+        DOCKERFILE_DIR=$(dirname "$DOCKERFILE")
+        DIGN="${DOCKERIGNORE:-}"
+        if [ -z "$DIGN" ]; then
+          if   [ -f "$DOCKERFILE_DIR/.dockerignore" ]; then DIGN="$DOCKERFILE_DIR/.dockerignore"
+          elif [ -f ".dockerignore" ];                  then DIGN=".dockerignore"
+          fi
+        fi
+        if [ -z "$DIGN" ]; then
+          warn "BP-IGNORE" ".dockerignore absent — risque d'inclusion de fichiers sensibles dans le contexte"
+        else
+          ok "BP-IGNORE" ".dockerignore présent : $DIGN"
+        fi
+
+        # ── Bonne pratique — pas de curl|wget|apt en dernière couche ─
+        LAST_STAGE=$(awk '/^FROM/{stage=$0} END{print stage}' "$DOCKERFILE")
+        if awk "/$LAST_STAGE/,0" "$DOCKERFILE" | grep -qE 'apt-get install|apk add|curl|wget'; then
+          warn "BP-TOOLS" "Outils réseau/package détectés dans le stage final — retirer ce qui n'est pas nécessaire à l'exécution"
+        fi
+
+        echo ""
+        echo "══════════════════════════════════════════════════════"
+        printf "  Résultat : %d erreur(s)  %d avertissement(s)\n" "$ERRORS" "$WARNINGS"
+        echo "══════════════════════════════════════════════════════"
+
+        # Écriture du résumé dans le job summary GitHub
+        {
+          echo "## Hardening ANSSI — Résultat Dockerfile"
+          echo "| Niveau | Nombre |"
+          echo "|--------|--------|"
+          echo "| Erreurs | $ERRORS |"
+          echo "| Avertissements | $WARNINGS |"
+          echo ""
+          echo "Référence : [ANSSI-PA-022](https://www.ssi.gouv.fr/guide/recommandations-de-securite-relatives-au-deploiement-de-conteneurs-docker/)"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # Échec si erreurs, ou si fail_on_warning=true et avertissements
+        if [ "$ERRORS" -gt 0 ]; then exit 1; fi
+        if [ "$FAIL_ON_WARN" = "true" ] && [ "$WARNINGS" -gt 0 ]; then exit 1; fi
