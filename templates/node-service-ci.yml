@@ -1,17 +1,23 @@
-name: CI — Node Service (example)
+# ================================================================
+#  Template — Node.js service CI
+#  (identique au template Python — seul `language` change)
+# ================================================================
+name: CI — <service-name>
 
 on:
   push:
     branches: [main, develop]
-    paths: ["services/<service-name>/**"]
+    paths:
+      - "<chemin-service>/**"
+      - ".github/workflows/ci.yml"
   pull_request:
-    branches: [main, develop]
-    paths: ["services/<service-name>/**"]
+    branches: [main]
+    paths: ["<chemin-service>/**"]
   workflow_dispatch:
 
 jobs:
   pipeline:
-    uses: ./.github/workflows/reusable-security.yml
+    uses: frluty/pipeline-security/.github/workflows/reusable-security.yml@v1
     permissions:
       contents:        read
       packages:        write
@@ -20,12 +26,11 @@ jobs:
       attestations:    write
     with:
       language:              node
-      app_path:              services/<service-name>
+      app_path:              <chemin-service>
       image_name:            <service-name>
-      dockerfile:            services/<service-name>/Dockerfile
-      context:               services/<service-name>
+      dockerfile:            <chemin-service>/Dockerfile
+      context:               <chemin-service>
       registry_type:         ghcr
-      # registry_url:        myacr.azurecr.io
       enable_signing:        ${{ github.event_name != 'pull_request' }}
       signing_mode:          keyless
       severity:              CRITICAL,HIGH
