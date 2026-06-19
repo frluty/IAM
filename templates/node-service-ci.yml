@@ -1,0 +1,39 @@
+# ================================================================
+#  Template — Node.js service CI
+#  (identique au template Python — seul `language` change)
+# ================================================================
+name: CI — <service-name>
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "<chemin-service>/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [main]
+    paths: ["<chemin-service>/**"]
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    uses: frluty/pipeline-security/.github/workflows/reusable-security.yml@v1
+    permissions:
+      contents:        read
+      packages:        write
+      security-events: write
+      id-token:        write
+      attestations:    write
+    with:
+      language:              node
+      app_path:              <chemin-service>
+      image_name:            <service-name>
+      dockerfile:            <chemin-service>/Dockerfile
+      context:               <chemin-service>
+      registry_type:         ghcr
+      enable_signing:        ${{ github.event_name != 'pull_request' }}
+      signing_mode:          keyless
+      severity:              CRITICAL,HIGH
+      fail_on_vulnerability: true
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}

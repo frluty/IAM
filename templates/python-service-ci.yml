@@ -1,0 +1,90 @@
+# ================================================================
+#  Template — Python service CI
+#
+#  Copier ce fichier dans votre repo projet :
+#    .github/workflows/ci.yml
+#
+#  Remplacer les valeurs entre < > et décommenter le registry
+#  souhaité. Ne pas modifier le workflow appelé.
+# ================================================================
+name: CI — <service-name>
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "<chemin-service>/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [main]
+    paths: ["<chemin-service>/**"]
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    # ── Référence versionnée vers le repo platform ──────────
+    # Mettre à jour @v1 vers le tag souhaité après chaque release platform
+    uses: frluty/pipeline-security/.github/workflows/reusable-security.yml@v1
+
+    permissions:
+      contents:        read
+      packages:        write
+      security-events: write
+      id-token:        write
+      attestations:    write
+
+    with:
+      # Application
+      language:   python          # python | node | auto
+      app_path:   <chemin-service>
+      image_name: <service-name>
+      dockerfile: <chemin-service>/Dockerfile
+      context:    <chemin-service>
+
+      # ── Registry — décommenter UN bloc ──────────────────
+
+      # GHCR (aucun secret requis)
+      registry_type: ghcr
+
+      # ACR — Service Principal
+      # registry_type: acr
+      # registry_url:  <nom>.azurecr.io
+
+      # ACR — Workload Identity (OIDC, sans secret)
+      # registry_type: acr
+      # registry_url:  <nom>.azurecr.io
+
+      # Harbor on-premise
+      # registry_type: harbor
+      # registry_url:  harbor.<domaine>
+      # registry_namespace: <projet>
+
+      # ── Contrôles du pipeline ────────────────────────────
+      enable_signing:        ${{ github.event_name != 'pull_request' }}
+      signing_mode:          keyless    # keyless | keypair
+      severity:              CRITICAL,HIGH
+      fail_on_vulnerability: true
+
+    secrets:
+      # GHCR — rien à fournir
+
+      # ACR Service Principal
+      # AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+      # AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+
+      # ACR Workload Identity (OIDC)
+      # AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+      # AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+      # AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Harbor
+      # REGISTRY_USERNAME: ${{ secrets.HARBOR_USER }}
+      # REGISTRY_PASSWORD: ${{ secrets.HARBOR_TOKEN }}
+
+      # Cosign key-pair (si signing_mode: keypair)
+      # COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      # COSIGN_PASSWORD:    ${{ secrets.COSIGN_PASSWORD }}
+
+      # Semgrep Cloud (optionnel — règles OSS utilisées sinon)
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
