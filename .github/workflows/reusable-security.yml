@@ -46,6 +46,10 @@ on:
       extra_tags:
         default:  ""
         type: string
+      service_description:
+        description: "Description courte du service — label OCI image.description"
+        default:  ""
+        type: string
 
       # ── Registry ─────────────────────────────────────────────
       registry_type:
@@ -259,19 +263,15 @@ jobs:
             acr|harbor) echo "prefix=${{ inputs.registry_url }}${NS}"             >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - uses: docker/metadata-action@v5
+      # ── Tags et labels OCI ────────────────────────────────────
+      - uses: ./.github/actions/docker-metadata
         id: meta
         with:
-          images: ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
-          tags: |
-            type=sha,prefix=sha-,format=short
-            type=ref,event=branch
-            type=ref,event=pr,prefix=pr-
-            type=semver,pattern={{version}}
-            ${{ inputs.extra_tags }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            com.pipeline.language=${{ needs.detect.outputs.language }}
+          image_name:          ${{ inputs.image_name }}
+          registry_prefix:     ${{ steps.reg.outputs.prefix }}
+          language:            ${{ needs.detect.outputs.language }}
+          service_description: ${{ inputs.service_description }}
+          extra_tags:          ${{ inputs.extra_tags }}
 
       - uses: docker/build-push-action@v6
         id: push
@@ -292,12 +292,11 @@ jobs:
         id: uri
         shell: bash
         run: |
-          BASE=$(echo "${{ steps.meta.outputs.tags }}" | head -1 | cut -d: -f1)
-          echo "value=${BASE}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "value=${{ steps.meta.outputs.image_base }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/attest-build-provenance@v1
         with:
-          subject-name:     ${{ steps.reg.outputs.prefix }}/${{ inputs.image_name }}
+          subject-name:     ${{ steps.meta.outputs.image_base }}
           subject-digest:   ${{ steps.push.outputs.digest }}
           push-to-registry: true
 

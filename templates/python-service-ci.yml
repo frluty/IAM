@@ -33,11 +33,12 @@ jobs:
       id-token:        write
       attestations:    write
     with:
-      language:   python
-      app_path:   <chemin-service>
-      image_name: <service-name>
-      dockerfile: <chemin-service>/Dockerfile
-      context:    <chemin-service>
+      language:            python
+      app_path:            <chemin-service>
+      image_name:          <service-name>          # kebab-case minuscule
+      service_description: "<description courte du service>"
+      dockerfile:          <chemin-service>/Dockerfile
+      context:             <chemin-service>
 
       # ── Registry — décommenter UN bloc ──────────────────
 

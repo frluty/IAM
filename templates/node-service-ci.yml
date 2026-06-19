@@ -27,7 +27,8 @@ jobs:
     with:
       language:              node
       app_path:              <chemin-service>
-      image_name:            <service-name>
+      image_name:            <service-name>          # kebab-case minuscule
+      service_description:   "<description courte du service>"
       dockerfile:            <chemin-service>/Dockerfile
       context:               <chemin-service>
       registry_type:         ghcr
