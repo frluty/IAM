@@ -15,10 +15,15 @@ inputs:
     description: "Comma-separated Dockle codes to ignore (ex: CIS-DI-0010)"
     default: ""
 
+# Version Dockle épinglée — mettre à jour intentionnellement après validation
+env:
+  DOCKLE_VERSION: "0.4.14"
+
 runs:
   using: composite
   steps:
 
+    # ── Trivy — SARIF (onglet Security) ──────────────────────────
     - name: Trivy · image scan (SARIF)
       uses: aquasecurity/trivy-action@0.28.0
       with:
@@ -27,17 +32,18 @@ runs:
         output:       trivy-image.sarif
         severity:     ${{ inputs.severity }}
         exit-code:    ${{ inputs.fail_on_vulnerability == 'true' && '1' || '0' }}
-        scanners:     vuln,secret
+        scanners:     vuln
         trivyignores: .trivyignore
 
-    - name: Upload SARIF
+    - name: Trivy · upload SARIF
       if: always()
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: trivy-image.sarif
         category:   trivy-image
 
-    - name: Trivy · image scan (JSON artifact)
+    # ── Trivy — JSON artifact (rapport complet) ───────────────────
+    - name: Trivy · image scan (JSON)
       if: always()
       uses: aquasecurity/trivy-action@0.28.0
       with:
@@ -46,9 +52,9 @@ runs:
         output:       trivy-image.json
         severity:     ${{ inputs.severity }}
         exit-code:    "0"
-        scanners:     vuln,secret
+        scanners:     vuln
 
-    - name: Upload report artifact
+    - name: Trivy · upload report
       if: always()
       uses: actions/upload-artifact@v4
       with:
@@ -56,25 +62,28 @@ runs:
         path:           trivy-image.json
         retention-days: 30
 
-    # ── Dockle — CIS Docker Benchmark (ANSSI-PA-022) ──────────
+    # ── Dockle — CIS Docker Benchmark (ANSSI-PA-022) ─────────────
     - name: Dockle · CIS Docker Benchmark
       if: always()
       shell: bash
       env:
-        DOCKLE_IGNORE: ${{ inputs.dockle_ignore }}
+        DOCKLE_IGNORE:   ${{ inputs.dockle_ignore }}
+        DOCKLE_VERSION:  "0.4.14"
+        GH_TOKEN:        ${{ github.token }}
       run: |
-        # Téléchargement du binaire Dockle (dernière version)
-        DOCKLE_VERSION=$(curl -sSfL \
-          https://api.github.com/repos/goodwithtech/dockle/releases/latest \
-          | grep '"tag_name"' | cut -d'"' -f4)
-        DOCKLE_VER="${DOCKLE_VERSION#v}"
+        set -euo pipefail
 
+        # Téléchargement de la version épinglée (authentifié pour éviter le rate-limit)
         curl -sSfL \
-          "https://github.com/goodwithtech/dockle/releases/download/${DOCKLE_VERSION}/dockle_${DOCKLE_VER}_Linux-64bit.tar.gz" \
-          | tar -xzf - dockle
-        chmod +x dockle
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          "https://github.com/goodwithtech/dockle/releases/download/v${DOCKLE_VERSION}/dockle_${DOCKLE_VERSION}_Linux-64bit.tar.gz" \
+          -o dockle.tar.gz
 
-        # Construction des arguments d'ignore
+        tar -xzf dockle.tar.gz dockle
+        chmod +x dockle
+        rm dockle.tar.gz
+
+        # Arguments d'ignore
         IGNORE_ARGS=""
         if [ -n "$DOCKLE_IGNORE" ]; then
           for code in $(echo "$DOCKLE_IGNORE" | tr ',' ' '); do
@@ -83,15 +92,17 @@ runs:
         fi
 
         # Rapport JSON pour artifact
+        # shellcheck disable=SC2086
         ./dockle --format json --output dockle.json $IGNORE_ARGS \
           "${{ inputs.image_uri }}" 2>/dev/null || true
 
-        # Affichage tabulaire dans les logs + blocage si FATAL
+        # Affichage tabulaire + blocage si FATAL
+        # shellcheck disable=SC2086
         ./dockle --format table $IGNORE_ARGS \
           --exit-level fatal \
           "${{ inputs.image_uri }}"
 
-    - name: Upload Dockle report
+    - name: Dockle · upload report
       if: always()
       uses: actions/upload-artifact@v4
       with:

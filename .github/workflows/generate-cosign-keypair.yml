@@ -2,16 +2,21 @@
 #  Utility — Generate Cosign key pair
 #
 #  Run ONCE manually to bootstrap key-pair signing.
-#  The private key is displayed in the run log — copy it
-#  immediately into the COSIGN_PRIVATE_KEY repository secret.
-#  The public key is uploaded as an artifact for verification.
+#  La clé privée est masquée dans les logs puis uploadée
+#  en artifact chiffré (7 jours) — la copier immédiatement
+#  dans le secret COSIGN_PRIVATE_KEY puis supprimer l'artifact.
 #
-#  After generation, disable this workflow (or delete it).
+#  After generation, disable or delete this workflow.
 # ============================================================
 name: "[Utility] Generate Cosign Key Pair"
 
 on:
   workflow_dispatch:
+    inputs:
+      passphrase:
+        description: "Passphrase pour la clé privée (laisser vide pour aucune)"
+        required: false
+        default: ""
 
 jobs:
   generate-keypair:
@@ -19,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions:  write   # requis pour upload-artifact
 
     steps:
       - name: Install Cosign
@@ -26,19 +32,37 @@ jobs:
 
       - name: Generate key pair
         env:
-          COSIGN_PASSWORD: ""   # set a passphrase here or leave empty
+          COSIGN_PASSWORD: ${{ github.event.inputs.passphrase }}
+        shell: bash
         run: |
           cosign generate-key-pair
-          echo ""
-          echo "======================================================"
-          echo "  PRIVATE KEY — copy to secret COSIGN_PRIVATE_KEY"
-          echo "======================================================"
-          cat cosign.key
-          echo "======================================================"
 
-      - name: Upload public key
+          # Masquer chaque ligne de la clé privée dans les logs GitHub
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < cosign.key
+
+          echo ""
+          echo "✅ Paire de clés générée."
+          echo "   → Clé privée : artifact 'cosign-private-key' (7 jours, accès restreint)"
+          echo "   → Clé publique : artifact 'cosign-public-key'"
+          echo ""
+          echo "Étapes suivantes :"
+          echo "  1. Télécharger l'artifact cosign-private-key"
+          echo "  2. Copier le contenu dans le secret COSIGN_PRIVATE_KEY"
+          echo "  3. Supprimer l'artifact immédiatement"
+          echo "  4. Désactiver ce workflow"
+
+      - name: Upload clé privée (artifact temporaire — supprimer après usage)
         uses: actions/upload-artifact@v4
         with:
-          name: cosign-public-key
-          path: cosign.pub
-          retention-days: 7
+          name:            cosign-private-key
+          path:            cosign.key
+          retention-days:  1    # expire en 1 jour
+
+      - name: Upload clé publique
+        uses: actions/upload-artifact@v4
+        with:
+          name:            cosign-public-key
+          path:            cosign.pub
+          retention-days:  30

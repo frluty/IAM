@@ -124,6 +124,11 @@ on:
       language:
         value: ${{ jobs.detect.outputs.language }}
 
+# Un seul run actif par branche/PR — annule les runs obsolètes
+concurrency:
+  group: security-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
 # ================================================================
 jobs:
 
@@ -131,6 +136,7 @@ jobs:
   detect:
     name: Detect Language
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       language: ${{ steps.action.outputs.language }}
     steps:
@@ -145,6 +151,7 @@ jobs:
   harden:
     name: Hardening ANSSI · Dockerfile
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect
     if: inputs.enable_hardening
     permissions:
@@ -162,6 +169,7 @@ jobs:
   code-scan:
     name: "CodeQL · ${{ needs.detect.outputs.language }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 60   # CodeQL peut être lent sur de grandes bases de code
     needs: detect
     if: inputs.enable_code_scan
     permissions:
@@ -179,6 +187,7 @@ jobs:
   dep-scan:
     name: Deps · Trivy FS
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: detect
     if: inputs.enable_dep_scan
     permissions:
@@ -196,6 +205,7 @@ jobs:
   build-push:
     name: "Build & Push · ${{ inputs.registry_type }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [detect, harden, code-scan, dep-scan]
     if: |
       always() &&
@@ -295,6 +305,7 @@ jobs:
   image-scan:
     name: Image Scan · Trivy + Dockle
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: build-push
     if: inputs.enable_image_scan && needs.build-push.result == 'success'
     permissions:
@@ -310,10 +321,11 @@ jobs:
       - uses: ./.github/actions/registry-login-acr
         if: inputs.registry_type == 'acr'
         with:
-          registry_url:  ${{ inputs.registry_url }}
-          client_id:     ${{ secrets.AZURE_CLIENT_ID }}
-          client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          tenant_id:     ${{ secrets.AZURE_TENANT_ID }}
+          registry_url:    ${{ inputs.registry_url }}
+          client_id:       ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - uses: ./.github/actions/registry-login-harbor
         if: inputs.registry_type == 'harbor'
@@ -333,6 +345,7 @@ jobs:
   sign:
     name: "Sign · ${{ inputs.signing_mode }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [detect, build-push, image-scan]
     if: |
       inputs.enable_signing &&
