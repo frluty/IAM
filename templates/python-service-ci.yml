@@ -1,11 +1,13 @@
 # ================================================================
-#  Template — Python service CI
+#  Template — Python service CI  (GHAS : CodeQL + Dependabot + Secret Scanning)
 #
-#  Copier ce fichier dans votre repo projet :
-#    .github/workflows/ci.yml
+#  Prérequis repo projet :
+#    1. GHAS activé (Settings → Security → GitHub Advanced Security)
+#    2. Secret scanning activé (Settings → Security → Secret scanning)
+#    3. .github/dependabot.yml configuré (copier templates/dependabot.yml)
 #
-#  Remplacer les valeurs entre < > et décommenter le registry
-#  souhaité. Ne pas modifier le workflow appelé.
+#  Copier ce fichier : .github/workflows/ci.yml
+#  Remplacer les valeurs entre < >
 # ================================================================
 name: CI — <service-name>
 
@@ -22,20 +24,16 @@ on:
 
 jobs:
   pipeline:
-    # ── Référence versionnée vers le repo platform ──────────
-    # Mettre à jour @v1 vers le tag souhaité après chaque release platform
     uses: frluty/pipeline-security/.github/workflows/reusable-security.yml@v1
-
     permissions:
+      actions:         read   # CodeQL
       contents:        read
       packages:        write
       security-events: write
       id-token:        write
       attestations:    write
-
     with:
-      # Application
-      language:   python          # python | node | auto
+      language:   python
       app_path:   <chemin-service>
       image_name: <service-name>
       dockerfile: <chemin-service>/Dockerfile
@@ -57,17 +55,14 @@ jobs:
       # Harbor on-premise
       # registry_type: harbor
       # registry_url:  harbor.<domaine>
-      # registry_namespace: <projet>
 
-      # ── Contrôles du pipeline ────────────────────────────
+      # ── Contrôles ────────────────────────────────────────
       enable_signing:        ${{ github.event_name != 'pull_request' }}
-      signing_mode:          keyless    # keyless | keypair
+      signing_mode:          keyless
       severity:              CRITICAL,HIGH
       fail_on_vulnerability: true
 
     secrets:
-      # GHCR — rien à fournir
-
       # ACR Service Principal
       # AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
       # AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -85,6 +80,3 @@ jobs:
       # Cosign key-pair (si signing_mode: keypair)
       # COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
       # COSIGN_PASSWORD:    ${{ secrets.COSIGN_PASSWORD }}
-
-      # Semgrep Cloud (optionnel — règles OSS utilisées sinon)
-      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}

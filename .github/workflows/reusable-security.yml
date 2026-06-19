@@ -4,11 +4,15 @@
 #  Chaque job délègue à une composite action dédiée :
 #    detect         →  .github/actions/detect-language
 #    harden         →  .github/actions/harden-dockerfile   (ANSSI-PA-022)
-#    code-scan      →  .github/actions/scan-code           (Semgrep)
-#    dep-scan       →  .github/actions/scan-deps           (pip-audit / npm audit)
+#    code-scan      →  .github/actions/scan-code           (CodeQL — GHAS)
+#    dep-scan       →  .github/actions/scan-deps           (Trivy FS — Dependabot via .github/dependabot.yml)
 #    build-push     →  docker/build-push-action
-#    image-scan     →  .github/actions/scan-image          (Trivy + Dockle CIS)
+#    image-scan     →  .github/actions/scan-image          (Trivy CVE + Dockle CIS)
 #    sign           →  .github/actions/sign-image          (Cosign)
+#
+#  GHAS natif (hors pipeline) :
+#    Secret scanning   →  activé au niveau org/repo dans les settings GitHub
+#    Dependabot alerts →  configuré via .github/dependabot.yml dans chaque repo projet
 #
 #  Registries : ghcr | acr | harbor
 # ================================================================
@@ -102,7 +106,6 @@ on:
       AZURE_SUBSCRIPTION_ID:  { required: false }
       COSIGN_PRIVATE_KEY:     { required: false }
       COSIGN_PASSWORD:        { required: false }
-      SEMGREP_APP_TOKEN:      { required: false }
 
     outputs:
       image_digest:
@@ -148,13 +151,14 @@ jobs:
           hadolint_ignore:   ${{ inputs.hadolint_ignore }}
           fail_on_warning:   ${{ inputs.harden_fail_on_warning }}
 
-  # ── 3. SAST — Semgrep (parallèle avec harden et dep-scan) ────
+  # ── 3. SAST — CodeQL GHAS (parallèle avec harden et dep-scan) ─
   code-scan:
-    name: "SAST · ${{ needs.detect.outputs.language }}"
+    name: "CodeQL · ${{ needs.detect.outputs.language }}"
     runs-on: ubuntu-latest
     needs: detect
     if: inputs.enable_code_scan
     permissions:
+      actions:         read   # requis par CodeQL
       contents:        read
       security-events: write
     steps:
@@ -162,15 +166,14 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: ./.github/actions/scan-code
         with:
-          language:      ${{ needs.detect.outputs.language }}
-          semgrep_token: ${{ secrets.SEMGREP_APP_TOKEN }}
+          language: ${{ needs.detect.outputs.language }}
 
-  # ── 4. Audit des dépendances (parallèle) ─────────────────────
+  # ── 4. Dep scan — Trivy FS gate CI (Dependabot gère les alertes) ─
   dep-scan:
-    name: "Deps · ${{ needs.detect.outputs.language }}"
+    name: Deps · Trivy FS
     runs-on: ubuntu-latest
     needs: detect
-    if: inputs.enable_dep_scan && needs.detect.outputs.language != 'unknown'
+    if: inputs.enable_dep_scan
     permissions:
       contents:        read
       security-events: write
@@ -178,7 +181,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/scan-deps
         with:
-          language:              ${{ needs.detect.outputs.language }}
           app_path:              ${{ inputs.app_path }}
           severity:              ${{ inputs.severity }}
           fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}

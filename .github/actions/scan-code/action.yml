@@ -1,48 +1,32 @@
-name: SAST Code Scan
-description: "Semgrep scan with language-specific rulesets — uploads SARIF to GitHub Security"
+name: SAST — CodeQL (GHAS)
+description: >
+  Analyse CodeQL avec les requêtes security-extended.
+  Nécessite une licence GitHub Advanced Security.
+  Supporte python et javascript-typescript (Node).
 
 inputs:
   language:
     description: "python | node | unknown"
     required: true
-  semgrep_token:
-    description: "Semgrep Cloud token (optional — OSS rules used if absent)"
-    default: ""
 
 runs:
   using: composite
   steps:
-    - name: Semgrep · Python
-      if: inputs.language == 'python'
-      uses: semgrep/semgrep-action@v1
-      with:
-        config: p/python p/flask p/django p/bandit p/secrets p/owasp-top-ten
-        generateSarif: "1"
-      env:
-        SEMGREP_APP_TOKEN: ${{ inputs.semgrep_token }}
 
-    - name: Semgrep · Node
-      if: inputs.language == 'node'
-      uses: semgrep/semgrep-action@v1
+    - name: CodeQL · Initialize
+      uses: github/codeql-action/init@v3
       with:
-        config: p/javascript p/typescript p/nodejs p/react p/secrets p/owasp-top-ten
-        generateSarif: "1"
-      env:
-        SEMGREP_APP_TOKEN: ${{ inputs.semgrep_token }}
+        languages: >-
+          ${{ inputs.language == 'python' && 'python'
+           || inputs.language == 'node'   && 'javascript-typescript'
+           || 'javascript-typescript' }}
+        queries: security-extended,security-and-quality
 
-    - name: Semgrep · Generic (fallback)
-      if: inputs.language == 'unknown'
-      uses: semgrep/semgrep-action@v1
-      with:
-        config: p/default p/secrets
-        generateSarif: "1"
-      env:
-        SEMGREP_APP_TOKEN: ${{ inputs.semgrep_token }}
+    - name: CodeQL · Autobuild
+      uses: github/codeql-action/autobuild@v3
 
-    - name: Upload SARIF
-      if: always()
-      uses: github/codeql-action/upload-sarif@v3
+    - name: CodeQL · Analyze
+      uses: github/codeql-action/analyze@v3
       with:
-        sarif_file: semgrep.sarif
-        category:   semgrep-sast
-      continue-on-error: true
+        category: "language:${{ inputs.language }}"
+        upload:   true
