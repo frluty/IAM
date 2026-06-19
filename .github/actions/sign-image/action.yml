@@ -1,21 +1,18 @@
 name: Sign Image
-description: "Cosign image signing — keyless (Sigstore OIDC) or key-pair"
+description: "Cosign image signing — keyless (Sigstore OIDC) ou keypair."
 
 inputs:
   image_uri:
-    description: "Full image URI (name@sha256:...)"
+    description: "URI complète de l'image (name@sha256:...)"
     required: true
   signing_mode:
     description: "keyless | keypair"
     default: "keyless"
   cosign_private_key:
-    description: "PEM private key (keypair mode only)"
+    description: "Clé privée PEM (mode keypair uniquement)"
     default: ""
   cosign_password:
-    description: "Key passphrase (keypair mode only)"
-    default: ""
-  language:
-    description: "Language tag embedded in the attestation"
+    description: "Passphrase de la clé (mode keypair uniquement)"
     default: ""
 
 runs:
@@ -25,14 +22,14 @@ runs:
     - name: Install Cosign
       uses: sigstore/cosign-installer@v3
 
-    - name: Sign · keyless (Sigstore OIDC)
+    - name: Sign · keyless
       if: inputs.signing_mode == 'keyless'
       shell: bash
       env:
         COSIGN_EXPERIMENTAL: "1"
       run: cosign sign --yes "${{ inputs.image_uri }}"
 
-    - name: Sign · key-pair
+    - name: Sign · keypair
       if: inputs.signing_mode == 'keypair'
       shell: bash
       env:
@@ -41,23 +38,6 @@ runs:
         printf '%s' "${{ inputs.cosign_private_key }}" > /tmp/cosign.key
         cosign sign --yes --key /tmp/cosign.key "${{ inputs.image_uri }}"
         rm -f /tmp/cosign.key
-
-    - name: Attest build metadata
-      if: inputs.signing_mode == 'keyless'
-      shell: bash
-      env:
-        COSIGN_EXPERIMENTAL: "1"
-      run: |
-        cosign attest --yes \
-          --predicate <(jq -n \
-            --arg repo     "${{ github.repository }}" \
-            --arg sha      "${{ github.sha }}" \
-            --arg ref      "${{ github.ref }}" \
-            --arg run_id   "${{ github.run_id }}" \
-            --arg language "${{ inputs.language }}" \
-            '{repo:$repo,sha:$sha,ref:$ref,runId:$run_id,language:$language}') \
-          --type custom \
-          "${{ inputs.image_uri }}"
 
     - name: Verify signature
       if: inputs.signing_mode == 'keyless'

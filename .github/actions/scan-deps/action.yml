@@ -1,26 +1,22 @@
-name: Dependency Scan — Trivy FS (GHAS)
-description: >
-  Scan Trivy des lockfiles en CI (bloque les PRs avec vulnérabilités connues).
-  L'audit de dépendances complet et les alertes Dependabot sont gérés
-  automatiquement par GHAS via .github/dependabot.yml.
-  Le secret scanning est géré nativement par GHAS (aucun scanner ici).
+name: Dependency Scan — Trivy FS
+description: "Scan Trivy des lockfiles — bloque si vulnérabilité CRITICAL ou HIGH."
 
 inputs:
   app_path:
     description: "Répertoire contenant les lockfiles"
     default: "."
   severity:
-    description: "Filtre de sévérité Trivy"
+    description: "Filtre de sévérité"
     default: "CRITICAL,HIGH"
   fail_on_vulnerability:
-    description: "'true' pour bloquer le pipeline sur findings"
+    description: "'true' pour bloquer le pipeline"
     default: "true"
 
 runs:
   using: composite
   steps:
 
-    - name: Trivy · lockfile scan (vuln uniquement)
+    - name: Trivy · lockfile scan
       uses: aquasecurity/trivy-action@0.28.0
       with:
         scan-type:    fs

@@ -1,19 +1,3 @@
-# ================================================================
-#  Reusable Security Pipeline — orchestrator
-#
-#  Chaque job délègue à une composite action dédiée :
-#    detect         →  .github/actions/detect-language
-#    harden         →  .github/actions/harden-dockerfile      (ANSSI-PA-022)
-#    code-scan      →  .github/actions/scan-code              (CodeQL — GHAS)
-#    dep-scan       →  .github/actions/scan-deps              (Trivy FS)
-#    build-push     →  registry-login-{ghcr|acr|harbor} + docker/build-push-action
-#    image-scan     →  .github/actions/scan-image             (Trivy CVE + Dockle CIS)
-#    sign           →  .github/actions/sign-image             (Cosign)
-#
-#  GHAS natif (hors pipeline) :
-#    Secret scanning   →  activé au niveau org/repo (Settings → Security)
-#    Dependabot alerts →  configuré via .github/dependabot.yml dans chaque repo projet
-# ================================================================
 name: Reusable — Security Pipeline
 
 on:
@@ -21,122 +5,66 @@ on:
     inputs:
       language:
         description: "python | node | auto"
-        default:  "auto"
+        default: "auto"
         type: string
       app_path:
-        description: "Répertoire source (là où se trouvent les lockfiles)"
-        default:  "."
+        description: "Répertoire source"
+        default: "."
         type: string
       image_name:
-        description: "Nom de l'image (ex: sirh-api)"
+        description: "Nom de l'image en kebab-case (ex: mon-api)"
         required: true
         type: string
       dockerfile:
-        default:  "Dockerfile"
+        default: "Dockerfile"
         type: string
       context:
-        default:  "."
+        default: "."
         type: string
-      build_args:
-        default:  ""
-        type: string
-      platforms:
-        default:  "linux/amd64"
-        type: string
-      extra_tags:
-        default:  ""
-        type: string
-      service_description:
-        description: "Description courte du service — label OCI image.description"
-        default:  ""
-        type: string
-
-      # ── Registry ─────────────────────────────────────────────
       registry_type:
         description: "ghcr | acr | harbor"
         required: true
         type: string
       registry_url:
         description: "Hostname du registre (requis pour acr et harbor)"
-        default:  ""
+        default: ""
         type: string
-      registry_namespace:
-        description: "Namespace / projet dans le registre"
-        default:  ""
-        type: string
-
-      # ── Contrôles du pipeline ─────────────────────────────────
-      enable_code_scan:
-        default:  true
-        type: boolean
-      enable_dep_scan:
-        default:  true
-        type: boolean
-      enable_hardening:
-        description: "Contrôles de durcissement ANSSI-PA-022"
-        default:  true
-        type: boolean
-      enable_image_scan:
-        default:  true
-        type: boolean
       enable_signing:
-        default:  true
+        default: true
         type: boolean
       signing_mode:
-        description: "keyless (Sigstore OIDC) | keypair"
-        default:  "keyless"
+        description: "keyless | keypair"
+        default: "keyless"
         type: string
       severity:
-        default:  "CRITICAL,HIGH"
+        default: "CRITICAL,HIGH"
         type: string
       fail_on_vulnerability:
-        default:  true
+        default: true
         type: boolean
-      hadolint_ignore:
-        description: "Règles Hadolint à ignorer (ex: DL3008,DL3009)"
-        default:  ""
-        type: string
-      dockle_ignore:
-        description: "Codes Dockle à ignorer (ex: CIS-DI-0010)"
-        default:  ""
-        type: string
-      harden_fail_on_warning:
-        description: "'true' pour bloquer sur les avertissements ANSSI"
-        default:  "false"
-        type: string
 
     secrets:
-      # ── ACR ──────────────────────────────────────────────────
-      AZURE_CLIENT_ID:        { required: false }
-      AZURE_CLIENT_SECRET:    { required: false }   # vide = OIDC Workload Identity
-      AZURE_TENANT_ID:        { required: false }
-      AZURE_SUBSCRIPTION_ID:  { required: false }
-      # ── Harbor ───────────────────────────────────────────────
-      HARBOR_USERNAME:        { required: false }
-      HARBOR_PASSWORD:        { required: false }
-      # ── Cosign key-pair ───────────────────────────────────────
-      COSIGN_PRIVATE_KEY:     { required: false }
-      COSIGN_PASSWORD:        { required: false }
+      AZURE_CLIENT_ID:       { required: false }
+      AZURE_CLIENT_SECRET:   { required: false }
+      AZURE_TENANT_ID:       { required: false }
+      AZURE_SUBSCRIPTION_ID: { required: false }
+      HARBOR_USERNAME:       { required: false }
+      HARBOR_PASSWORD:       { required: false }
+      COSIGN_PRIVATE_KEY:    { required: false }
+      COSIGN_PASSWORD:       { required: false }
 
     outputs:
       image_digest:
         value: ${{ jobs.build-push.outputs.digest }}
       image_uri:
         value: ${{ jobs.build-push.outputs.image_uri }}
-      image_tags:
-        value: ${{ jobs.build-push.outputs.tags }}
-      language:
-        value: ${{ jobs.detect.outputs.language }}
 
-# Un seul run actif par branche/PR — annule les runs obsolètes
 concurrency:
   group: security-pipeline-${{ github.ref }}
   cancel-in-progress: true
 
-# ================================================================
 jobs:
 
-  # ── 1. Détection du langage ───────────────────────────────────
   detect:
     name: Detect Language
     runs-on: ubuntu-latest
@@ -151,13 +79,11 @@ jobs:
           language: ${{ inputs.language }}
           app_path: ${{ inputs.app_path }}
 
-  # ── 2. Hardening Dockerfile ANSSI-PA-022 (pré-build) ─────────
   harden:
     name: Hardening ANSSI · Dockerfile
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: detect
-    if: inputs.enable_hardening
     permissions:
       contents:        read
       security-events: write
@@ -165,17 +91,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/harden-dockerfile
         with:
-          dockerfile:      ${{ inputs.dockerfile }}
-          hadolint_ignore: ${{ inputs.hadolint_ignore }}
-          fail_on_warning: ${{ inputs.harden_fail_on_warning }}
+          dockerfile: ${{ inputs.dockerfile }}
 
-  # ── 3. SAST CodeQL — GHAS (parallèle) ────────────────────────
   code-scan:
     name: "CodeQL · ${{ needs.detect.outputs.language }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # CodeQL peut être lent sur de grandes bases de code
+    timeout-minutes: 60
     needs: detect
-    if: inputs.enable_code_scan
     permissions:
       actions:         read
       contents:        read
@@ -187,13 +109,11 @@ jobs:
         with:
           language: ${{ needs.detect.outputs.language }}
 
-  # ── 4. Scan dépendances — Trivy FS gate CI (parallèle) ───────
   dep-scan:
     name: Deps · Trivy FS
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: detect
-    if: inputs.enable_dep_scan
     permissions:
       contents:        read
       security-events: write
@@ -205,7 +125,6 @@ jobs:
           severity:              ${{ inputs.severity }}
           fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}
 
-  # ── 5. Build & push ───────────────────────────────────────────
   build-push:
     name: "Build & Push · ${{ inputs.registry_type }}"
     runs-on: ubuntu-latest
@@ -213,9 +132,9 @@ jobs:
     needs: [detect, harden, code-scan, dep-scan]
     if: |
       always() &&
-      (needs.harden.result    == 'success' || needs.harden.result    == 'skipped') &&
-      (needs.code-scan.result == 'success' || needs.code-scan.result == 'skipped') &&
-      (needs.dep-scan.result  == 'success' || needs.dep-scan.result  == 'skipped')
+      needs.harden.result    == 'success' &&
+      needs.code-scan.result == 'success' &&
+      needs.dep-scan.result  == 'success'
     permissions:
       contents:     read
       packages:     write
@@ -224,14 +143,11 @@ jobs:
     outputs:
       digest:    ${{ steps.push.outputs.digest }}
       image_uri: ${{ steps.uri.outputs.value }}
-      tags:      ${{ steps.meta.outputs.tags }}
 
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # ── Login selon le registry ───────────────────────────────
       - uses: ./.github/actions/registry-login-ghcr
         if: inputs.registry_type == 'ghcr'
 
@@ -251,44 +167,36 @@ jobs:
           username:     ${{ secrets.HARBOR_USERNAME }}
           password:     ${{ secrets.HARBOR_PASSWORD }}
 
-      # ── Préfixe registry ──────────────────────────────────────
-      - name: Compute registry prefix
+      - name: Registry prefix
         id: reg
         shell: bash
         run: |
-          NS="${{ inputs.registry_namespace }}"
-          NS="${NS:+/$NS}"
           case "${{ inputs.registry_type }}" in
-            ghcr)       echo "prefix=ghcr.io/${{ github.repository_owner }}${NS}" >> "$GITHUB_OUTPUT" ;;
-            acr|harbor) echo "prefix=${{ inputs.registry_url }}${NS}"             >> "$GITHUB_OUTPUT" ;;
+            ghcr)       echo "prefix=ghcr.io/${{ github.repository_owner }}" >> "$GITHUB_OUTPUT" ;;
+            acr|harbor) echo "prefix=${{ inputs.registry_url }}"              >> "$GITHUB_OUTPUT" ;;
           esac
 
-      # ── Tags et labels OCI ────────────────────────────────────
       - uses: ./.github/actions/docker-metadata
         id: meta
         with:
-          image_name:          ${{ inputs.image_name }}
-          registry_prefix:     ${{ steps.reg.outputs.prefix }}
-          language:            ${{ needs.detect.outputs.language }}
-          service_description: ${{ inputs.service_description }}
-          extra_tags:          ${{ inputs.extra_tags }}
+          image_name:      ${{ inputs.image_name }}
+          registry_prefix: ${{ steps.reg.outputs.prefix }}
+          language:        ${{ needs.detect.outputs.language }}
 
       - uses: docker/build-push-action@v6
         id: push
         with:
           context:    ${{ inputs.context }}
           file:       ${{ inputs.dockerfile }}
-          platforms:  ${{ inputs.platforms }}
           push:       true
           tags:       ${{ steps.meta.outputs.tags }}
           labels:     ${{ steps.meta.outputs.labels }}
-          build-args: ${{ inputs.build_args }}
           cache-from: type=gha
           cache-to:   type=gha,mode=max
           provenance: true
           sbom:       true
 
-      - name: Compute image URI
+      - name: Image URI
         id: uri
         shell: bash
         run: |
@@ -300,13 +208,12 @@ jobs:
           subject-digest:   ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-  # ── 6. Scan image — Trivy CVE + Dockle CIS ───────────────────
   image-scan:
     name: Image Scan · Trivy + Dockle
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: build-push
-    if: inputs.enable_image_scan && needs.build-push.result == 'success'
+    if: needs.build-push.result == 'success'
     permissions:
       contents:        read
       security-events: write
@@ -338,18 +245,16 @@ jobs:
           image_uri:             ${{ needs.build-push.outputs.image_uri }}
           severity:              ${{ inputs.severity }}
           fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}
-          dockle_ignore:         ${{ inputs.dockle_ignore }}
 
-  # ── 7. Signature Cosign ───────────────────────────────────────
   sign:
     name: "Sign · ${{ inputs.signing_mode }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [detect, build-push, image-scan]
+    needs: [build-push, image-scan]
     if: |
       inputs.enable_signing &&
       needs.build-push.result == 'success' &&
-      (needs.image-scan.result == 'success' || needs.image-scan.result == 'skipped')
+      needs.image-scan.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -382,4 +287,3 @@ jobs:
           signing_mode:       ${{ inputs.signing_mode }}
           cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
           cosign_password:    ${{ secrets.COSIGN_PASSWORD }}
-          language:           ${{ needs.detect.outputs.language }}

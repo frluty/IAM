@@ -1,126 +1,58 @@
 name: Docker Image Metadata
-description: >
-  Calcule les tags et labels OCI selon les bonnes pratiques.
-
-  Stratégie de tags :
-    Sur git tag vX.Y.Z (release)
-      registry/image:1.2.3          ← version exacte (immuable)
-      registry/image:1.2            ← floating minor
-      registry/image:1              ← floating major (hors pre-release)
-      registry/image:latest         ← uniquement sur tag stable
-      registry/image:sha-abc1234    ← SHA court (toujours présent)
-
-    Sur push branche (main, develop…)
-      registry/image:main           ← référence mutable de branche
-      registry/image:sha-abc1234    ← SHA court (toujours présent)
-
-    Sur pull request
-      registry/image:pr-42          ← pour les environnements de review
-      registry/image:sha-abc1234
-
-  Labels OCI (spec opencontainers/image-spec) inclus automatiquement.
+description: "Calcule les tags et labels OCI de l'image."
 
 inputs:
   image_name:
-    description: "Nom de l'image en kebab-case minuscule (ex: sirh-api)"
+    description: "Nom de l'image en kebab-case (ex: mon-api)"
     required: true
   registry_prefix:
-    description: "Préfixe registry complet (ex: ghcr.io/monorg)"
+    description: "Préfixe registry (ex: ghcr.io/monorg)"
     required: true
   language:
-    description: "Langage applicatif (python | node) — injecté dans les labels"
-    default: ""
-  service_description:
-    description: "Description courte du service — label OCI description"
-    default: ""
-  extra_tags:
-    description: "Tags statiques additionnels (ex: stable,beta)"
+    description: "python | node"
     default: ""
 
 outputs:
   tags:
-    description: "Tags Docker calculés (multiline)"
+    description: "Tags Docker calculés"
     value: ${{ steps.meta.outputs.tags }}
   labels:
     description: "Labels OCI calculés"
     value: ${{ steps.meta.outputs.labels }}
-  version:
-    description: "Version principale déterminée (semver ou SHA)"
-    value: ${{ steps.meta.outputs.version }}
   image_base:
-    description: "Nom d'image sans tag — registry/namespace/image"
+    description: "Nom d'image sans tag (registry/image)"
     value: ${{ steps.image-base.outputs.value }}
 
 runs:
   using: composite
   steps:
 
-    # ── Validation du nom d'image ─────────────────────────────────
-    - name: Validate image name
-      shell: bash
-      run: |
-        NAME="${{ inputs.image_name }}"
-        if ! echo "$NAME" | grep -qE '^[a-z0-9][a-z0-9._-]*$'; then
-          echo "::error::image_name '$NAME' invalide — utiliser des minuscules, chiffres, tirets uniquement"
-          exit 1
-        fi
-        echo "✅ Nom d'image valide : $NAME"
-
-    # ── Calcul du nom de base complet ─────────────────────────────
     - name: Compute image base name
       id: image-base
       shell: bash
       run: |
         echo "value=${{ inputs.registry_prefix }}/${{ inputs.image_name }}" >> "$GITHUB_OUTPUT"
 
-    # ── Stratégie de tags et labels OCI ──────────────────────────
     - name: Docker metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: ${{ steps.image-base.outputs.value }}
-
-        # latest=false → géré explicitement via type=raw ci-dessous
-        # pour un contrôle strict (uniquement sur tags stables)
         flavor: |
           latest=false
-
         tags: |
-          # ── Sur git tag vX.Y.Z ───────────────────────────────
-          # Version exacte
           type=semver,pattern={{version}}
-          # Floating minor : 1.2
           type=semver,pattern={{major}}.{{minor}}
-          # Floating major : 1 (désactivé sur pre-release ex: v1.0.0-rc1)
           type=semver,pattern={{major}},enable=${{ !contains(github.ref, '-') }}
-          # latest uniquement sur tag stable (pas de tiret dans la version)
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
-
-          # ── SHA court — toujours présent (traçabilité) ────────
           type=sha,prefix=sha-,format=short
-
-          # ── Branche et PR ─────────────────────────────────────
           type=ref,event=branch
           type=ref,event=pr,prefix=pr-
-
-          # ── Build planifié ────────────────────────────────────
-          type=schedule,pattern=nightly-{{date 'YYYYMMDD'}}
-
-          # ── Tags additionnels fournis par le caller ────────────
-          ${{ inputs.extra_tags }}
-
         labels: |
-          # ── Spec OCI opencontainers/image-spec ────────────────
           org.opencontainers.image.title=${{ inputs.image_name }}
-          org.opencontainers.image.description=${{ inputs.service_description }}
           org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           org.opencontainers.image.revision=${{ github.sha }}
           org.opencontainers.image.vendor=${{ github.repository_owner }}
-
-          # ── Labels internes pipeline ───────────────────────────
           com.company.language=${{ inputs.language }}
-          com.company.actor=${{ github.actor }}
-          com.company.workflow=${{ github.workflow }}
-          com.company.run-id=${{ github.run_id }}
           com.company.repo=${{ github.repository }}

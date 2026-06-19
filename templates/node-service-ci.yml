@@ -1,6 +1,3 @@
-# ================================================================
-#  Template — Node.js service CI  (GHAS : CodeQL + Dependabot + Secret Scanning)
-# ================================================================
 name: CI — <service-name>
 
 on:
@@ -25,14 +22,10 @@ jobs:
       id-token:        write
       attestations:    write
     with:
-      language:              node
-      app_path:              <chemin-service>
-      image_name:            <service-name>          # kebab-case minuscule
-      service_description:   "<description courte du service>"
-      dockerfile:            <chemin-service>/Dockerfile
-      context:               <chemin-service>
-      registry_type:         ghcr
-      enable_signing:        ${{ github.event_name != 'pull_request' }}
-      signing_mode:          keyless
-      severity:              CRITICAL,HIGH
-      fail_on_vulnerability: true
+      language:       node
+      app_path:       <chemin-service>
+      image_name:     <service-name>
+      dockerfile:     <chemin-service>/Dockerfile
+      context:        <chemin-service>
+      registry_type:  ghcr
+      enable_signing: ${{ github.event_name != 'pull_request' }}
