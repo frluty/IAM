@@ -3,18 +3,16 @@
 #
 #  Chaque job délègue à une composite action dédiée :
 #    detect         →  .github/actions/detect-language
-#    harden         →  .github/actions/harden-dockerfile   (ANSSI-PA-022)
-#    code-scan      →  .github/actions/scan-code           (CodeQL — GHAS)
-#    dep-scan       →  .github/actions/scan-deps           (Trivy FS — Dependabot via .github/dependabot.yml)
-#    build-push     →  docker/build-push-action
-#    image-scan     →  .github/actions/scan-image          (Trivy CVE + Dockle CIS)
-#    sign           →  .github/actions/sign-image          (Cosign)
+#    harden         →  .github/actions/harden-dockerfile      (ANSSI-PA-022)
+#    code-scan      →  .github/actions/scan-code              (CodeQL — GHAS)
+#    dep-scan       →  .github/actions/scan-deps              (Trivy FS)
+#    build-push     →  registry-login-{ghcr|acr|harbor} + docker/build-push-action
+#    image-scan     →  .github/actions/scan-image             (Trivy CVE + Dockle CIS)
+#    sign           →  .github/actions/sign-image             (Cosign)
 #
 #  GHAS natif (hors pipeline) :
-#    Secret scanning   →  activé au niveau org/repo dans les settings GitHub
+#    Secret scanning   →  activé au niveau org/repo (Settings → Security)
 #    Dependabot alerts →  configuré via .github/dependabot.yml dans chaque repo projet
-#
-#  Registries : ghcr | acr | harbor
 # ================================================================
 name: Reusable — Security Pipeline
 
@@ -26,11 +24,11 @@ on:
         default:  "auto"
         type: string
       app_path:
-        description: "Source directory (where lockfiles live)"
+        description: "Répertoire source (là où se trouvent les lockfiles)"
         default:  "."
         type: string
       image_name:
-        description: "Image name (e.g. sirh-api)"
+        description: "Nom de l'image (ex: sirh-api)"
         required: true
         type: string
       dockerfile:
@@ -48,17 +46,22 @@ on:
       extra_tags:
         default:  ""
         type: string
+
+      # ── Registry ─────────────────────────────────────────────
       registry_type:
         description: "ghcr | acr | harbor"
         required: true
         type: string
       registry_url:
+        description: "Hostname du registre (requis pour acr et harbor)"
         default:  ""
         type: string
       registry_namespace:
+        description: "Namespace / projet dans le registre"
         default:  ""
         type: string
-      # ── Contrôles ────────────────────────────────────────────
+
+      # ── Contrôles du pipeline ─────────────────────────────────
       enable_code_scan:
         default:  true
         type: boolean
@@ -66,7 +69,7 @@ on:
         default:  true
         type: boolean
       enable_hardening:
-        description: "Activer les contrôles de durcissement ANSSI-PA-022"
+        description: "Contrôles de durcissement ANSSI-PA-022"
         default:  true
         type: boolean
       enable_image_scan:
@@ -76,6 +79,7 @@ on:
         default:  true
         type: boolean
       signing_mode:
+        description: "keyless (Sigstore OIDC) | keypair"
         default:  "keyless"
         type: string
       severity:
@@ -98,12 +102,15 @@ on:
         type: string
 
     secrets:
-      REGISTRY_USERNAME:      { required: false }
-      REGISTRY_PASSWORD:      { required: false }
+      # ── ACR ──────────────────────────────────────────────────
       AZURE_CLIENT_ID:        { required: false }
-      AZURE_CLIENT_SECRET:    { required: false }
+      AZURE_CLIENT_SECRET:    { required: false }   # vide = OIDC Workload Identity
       AZURE_TENANT_ID:        { required: false }
       AZURE_SUBSCRIPTION_ID:  { required: false }
+      # ── Harbor ───────────────────────────────────────────────
+      HARBOR_USERNAME:        { required: false }
+      HARBOR_PASSWORD:        { required: false }
+      # ── Cosign key-pair ───────────────────────────────────────
       COSIGN_PRIVATE_KEY:     { required: false }
       COSIGN_PASSWORD:        { required: false }
 
@@ -134,7 +141,7 @@ jobs:
           language: ${{ inputs.language }}
           app_path: ${{ inputs.app_path }}
 
-  # ── 2. Durcissement Dockerfile (ANSSI-PA-022) — pré-build ────
+  # ── 2. Hardening Dockerfile ANSSI-PA-022 (pré-build) ─────────
   harden:
     name: Hardening ANSSI · Dockerfile
     runs-on: ubuntu-latest
@@ -147,18 +154,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/harden-dockerfile
         with:
-          dockerfile:        ${{ inputs.dockerfile }}
-          hadolint_ignore:   ${{ inputs.hadolint_ignore }}
-          fail_on_warning:   ${{ inputs.harden_fail_on_warning }}
+          dockerfile:      ${{ inputs.dockerfile }}
+          hadolint_ignore: ${{ inputs.hadolint_ignore }}
+          fail_on_warning: ${{ inputs.harden_fail_on_warning }}
 
-  # ── 3. SAST — CodeQL GHAS (parallèle avec harden et dep-scan) ─
+  # ── 3. SAST CodeQL — GHAS (parallèle) ────────────────────────
   code-scan:
     name: "CodeQL · ${{ needs.detect.outputs.language }}"
     runs-on: ubuntu-latest
     needs: detect
     if: inputs.enable_code_scan
     permissions:
-      actions:         read   # requis par CodeQL
+      actions:         read
       contents:        read
       security-events: write
     steps:
@@ -168,7 +175,7 @@ jobs:
         with:
           language: ${{ needs.detect.outputs.language }}
 
-  # ── 4. Dep scan — Trivy FS gate CI (Dependabot gère les alertes) ─
+  # ── 4. Scan dépendances — Trivy FS gate CI (parallèle) ───────
   dep-scan:
     name: Deps · Trivy FS
     runs-on: ubuntu-latest
@@ -187,7 +194,7 @@ jobs:
 
   # ── 5. Build & push ───────────────────────────────────────────
   build-push:
-    name: Build & Push
+    name: "Build & Push · ${{ inputs.registry_type }}"
     runs-on: ubuntu-latest
     needs: [detect, harden, code-scan, dep-scan]
     if: |
@@ -204,20 +211,33 @@ jobs:
       digest:    ${{ steps.push.outputs.digest }}
       image_uri: ${{ steps.uri.outputs.value }}
       tags:      ${{ steps.meta.outputs.tags }}
+
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - uses: ./.github/actions/registry-login
-        with:
-          registry_type:         ${{ inputs.registry_type }}
-          registry_url:          ${{ inputs.registry_url }}
-          username:              ${{ secrets.AZURE_CLIENT_ID || secrets.REGISTRY_USERNAME }}
-          password:              ${{ secrets.AZURE_CLIENT_SECRET || secrets.REGISTRY_PASSWORD }}
-          azure_tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
-          azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # ── Login selon le registry ───────────────────────────────
+      - uses: ./.github/actions/registry-login-ghcr
+        if: inputs.registry_type == 'ghcr'
 
+      - uses: ./.github/actions/registry-login-acr
+        if: inputs.registry_type == 'acr'
+        with:
+          registry_url:    ${{ inputs.registry_url }}
+          client_id:       ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: ./.github/actions/registry-login-harbor
+        if: inputs.registry_type == 'harbor'
+        with:
+          registry_url: ${{ inputs.registry_url }}
+          username:     ${{ secrets.HARBOR_USERNAME }}
+          password:     ${{ secrets.HARBOR_PASSWORD }}
+
+      # ── Préfixe registry ──────────────────────────────────────
       - name: Compute registry prefix
         id: reg
         shell: bash
@@ -283,12 +303,25 @@ jobs:
       packages:        read
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/registry-login
+
+      - uses: ./.github/actions/registry-login-ghcr
+        if: inputs.registry_type == 'ghcr'
+
+      - uses: ./.github/actions/registry-login-acr
+        if: inputs.registry_type == 'acr'
         with:
-          registry_type: ${{ inputs.registry_type }}
           registry_url:  ${{ inputs.registry_url }}
-          username:      ${{ secrets.AZURE_CLIENT_ID || secrets.REGISTRY_USERNAME }}
-          password:      ${{ secrets.AZURE_CLIENT_SECRET || secrets.REGISTRY_PASSWORD }}
+          client_id:     ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:     ${{ secrets.AZURE_TENANT_ID }}
+
+      - uses: ./.github/actions/registry-login-harbor
+        if: inputs.registry_type == 'harbor'
+        with:
+          registry_url: ${{ inputs.registry_url }}
+          username:     ${{ secrets.HARBOR_USERNAME }}
+          password:     ${{ secrets.HARBOR_PASSWORD }}
+
       - uses: ./.github/actions/scan-image
         with:
           image_uri:             ${{ needs.build-push.outputs.image_uri }}
@@ -311,14 +344,26 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/registry-login
+
+      - uses: ./.github/actions/registry-login-ghcr
+        if: inputs.registry_type == 'ghcr'
+
+      - uses: ./.github/actions/registry-login-acr
+        if: inputs.registry_type == 'acr'
         with:
-          registry_type:         ${{ inputs.registry_type }}
-          registry_url:          ${{ inputs.registry_url }}
-          username:              ${{ secrets.AZURE_CLIENT_ID || secrets.REGISTRY_USERNAME }}
-          password:              ${{ secrets.AZURE_CLIENT_SECRET || secrets.REGISTRY_PASSWORD }}
-          azure_tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
-          azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          registry_url:    ${{ inputs.registry_url }}
+          client_id:       ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: ./.github/actions/registry-login-harbor
+        if: inputs.registry_type == 'harbor'
+        with:
+          registry_url: ${{ inputs.registry_url }}
+          username:     ${{ secrets.HARBOR_USERNAME }}
+          password:     ${{ secrets.HARBOR_PASSWORD }}
+
       - uses: ./.github/actions/sign-image
         with:
           image_uri:          ${{ needs.build-push.outputs.image_uri }}

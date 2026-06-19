@@ -74,8 +74,8 @@ jobs:
       # AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Harbor
-      # REGISTRY_USERNAME: ${{ secrets.HARBOR_USER }}
-      # REGISTRY_PASSWORD: ${{ secrets.HARBOR_TOKEN }}
+      # HARBOR_USERNAME: ${{ secrets.HARBOR_USER }}
+      # HARBOR_PASSWORD: ${{ secrets.HARBOR_TOKEN }}
 
       # Cosign key-pair (si signing_mode: keypair)
       # COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}

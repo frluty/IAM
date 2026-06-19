@@ -1,0 +1,51 @@
+name: Registry Login — ACR
+description: >
+  Authentification sur Azure Container Registry.
+  Deux modes supportés :
+    - Service Principal  : fournir client_id + client_secret
+    - Workload Identity  : fournir client_id + tenant_id + subscription_id
+                           (OIDC — aucun secret, nécessite id-token: write)
+
+inputs:
+  registry_url:
+    description: "Hostname ACR (ex: monacr.azurecr.io)"
+    required: true
+  client_id:
+    description: "App Registration Client ID (SP et OIDC)"
+    required: true
+  client_secret:
+    description: "Client Secret — laisser vide pour utiliser OIDC"
+    default: ""
+  tenant_id:
+    description: "Azure Tenant ID (OIDC uniquement)"
+    default: ""
+  subscription_id:
+    description: "Azure Subscription ID (OIDC uniquement)"
+    default: ""
+
+runs:
+  using: composite
+  steps:
+
+    # ── Mode Service Principal ────────────────────────────────
+    - name: Login · ACR (Service Principal)
+      if: inputs.client_secret != ''
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry_url }}
+        username: ${{ inputs.client_id }}
+        password: ${{ inputs.client_secret }}
+
+    # ── Mode Workload Identity Federation (OIDC) ─────────────
+    - name: Login · Azure OIDC (Workload Identity)
+      if: inputs.client_secret == ''
+      uses: azure/login@v2
+      with:
+        client-id:       ${{ inputs.client_id }}
+        tenant-id:       ${{ inputs.tenant_id }}
+        subscription-id: ${{ inputs.subscription_id }}
+
+    - name: Login · ACR token (OIDC)
+      if: inputs.client_secret == ''
+      shell: bash
+      run: az acr login --name "${{ inputs.registry_url }}"

@@ -1,0 +1,25 @@
+name: Registry Login — Harbor
+description: >
+  Authentification sur un registre Harbor on-premise.
+  Supporte les tokens Robot Account et les comptes utilisateur.
+
+inputs:
+  registry_url:
+    description: "Hostname Harbor (ex: harbor.mondomaine.com)"
+    required: true
+  username:
+    description: "Utilisateur Harbor ou Robot Account (ex: robot$ci)"
+    required: true
+  password:
+    description: "Mot de passe ou token du Robot Account"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Login · Harbor
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry_url }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
