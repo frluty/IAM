@@ -1,0 +1,67 @@
+# ================================================================
+#  Dependabot — GHAS
+#
+#  Copier dans le repo projet : .github/dependabot.yml
+#  Décommenter les blocs correspondant aux écosystèmes utilisés.
+#  Dependabot crée des PRs automatiques et alimente les alertes GHAS.
+# ================================================================
+version: 2
+
+updates:
+
+  # ── GitHub Actions ────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Europe/Paris"
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: "chore(actions)"
+
+  # ── Python (pip / Poetry / Pipenv) ───────────────────────────
+  # - package-ecosystem: pip
+  #   directory: "/<chemin-service>"
+  #   schedule:
+  #     interval: weekly
+  #     day: monday
+  #     time: "06:00"
+  #     timezone: "Europe/Paris"
+  #   open-pull-requests-limit: 10
+  #   labels: [dependencies, python, security]
+  #   commit-message:
+  #     prefix: "chore(deps)"
+  #   ignore:
+  #     # Ignorer les mises à jour majeures (à gérer manuellement)
+  #     - dependency-name: "*"
+  #       update-types: ["version-update:semver-major"]
+
+  # ── Node (npm / yarn / pnpm) ──────────────────────────────────
+  # - package-ecosystem: npm
+  #   directory: "/<chemin-service>"
+  #   schedule:
+  #     interval: weekly
+  #     day: monday
+  #     time: "06:00"
+  #     timezone: "Europe/Paris"
+  #   open-pull-requests-limit: 10
+  #   labels: [dependencies, node, security]
+  #   commit-message:
+  #     prefix: "chore(deps)"
+  #   ignore:
+  #     - dependency-name: "*"
+  #       update-types: ["version-update:semver-major"]
+
+  # ── Docker (base images dans Dockerfile) ─────────────────────
+  # - package-ecosystem: docker
+  #   directory: "/<chemin-service>"
+  #   schedule:
+  #     interval: weekly
+  #     day: monday
+  #     time: "06:00"
+  #     timezone: "Europe/Paris"
+  #   labels: [dependencies, docker, security]
+  #   commit-message:
+  #     prefix: "chore(docker)"

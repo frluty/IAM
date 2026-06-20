@@ -1,0 +1,32 @@
+name: SAST — CodeQL (GHAS)
+description: >
+  Analyse CodeQL avec les requêtes security-extended.
+  Nécessite une licence GitHub Advanced Security.
+  Supporte python et javascript-typescript (Node).
+
+inputs:
+  language:
+    description: "python | node | unknown"
+    required: true
+
+runs:
+  using: composite
+  steps:
+
+    - name: CodeQL · Initialize
+      uses: github/codeql-action/init@v3
+      with:
+        languages: >-
+          ${{ inputs.language == 'python' && 'python'
+           || inputs.language == 'node'   && 'javascript-typescript'
+           || 'javascript-typescript' }}
+        queries: security-extended,security-and-quality
+
+    - name: CodeQL · Autobuild
+      uses: github/codeql-action/autobuild@v3
+
+    - name: CodeQL · Analyze
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "language:${{ inputs.language }}"
+        upload:   true

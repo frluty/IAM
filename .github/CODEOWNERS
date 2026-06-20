@@ -1,0 +1,17 @@
+# ================================================================
+#  CODEOWNERS — repo platform pipeline-security
+#
+#  Toute modification sous .github/ exige une approbation
+#  de l'équipe sécurité/platform avant merge.
+#  Les développeurs projet n'ont accès qu'en lecture (templates/).
+# ================================================================
+
+# Propriété globale par défaut
+*                          @frluty/platform-team
+
+# Actions et workflows — équipe sécurité uniquement
+.github/actions/**         @frluty/security-team
+.github/workflows/**       @frluty/security-team
+
+# Templates — platform team (les projets les consomment en lecture)
+templates/**               @frluty/platform-team

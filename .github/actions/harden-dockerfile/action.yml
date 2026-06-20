@@ -1,0 +1,117 @@
+name: Dockerfile Hardening Check (ANSSI)
+description: "Hadolint + contrôles ANSSI-PA-022 (R4, R5, R7, R8, R9, R14, R16, R19)."
+
+inputs:
+  dockerfile:
+    description: "Chemin vers le Dockerfile"
+    required: true
+
+runs:
+  using: composite
+  steps:
+
+    - name: Hadolint · lint
+      id: hadolint
+      uses: hadolint/hadolint-action@v3.1.0
+      continue-on-error: true
+      with:
+        dockerfile:        ${{ inputs.dockerfile }}
+        failure-threshold: error
+        format:            sarif
+        output-file:       hadolint.sarif
+
+    - name: Hadolint · upload SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: hadolint.sarif
+        category:   hadolint
+      continue-on-error: true
+
+    - name: Hadolint · résultat
+      if: steps.hadolint.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::error file=${{ inputs.dockerfile }}::Hadolint a détecté des violations"
+        exit 1
+
+    - name: ANSSI-PA-022 · vérifications
+      shell: bash
+      run: |
+        DOCKERFILE="${{ inputs.dockerfile }}"
+        ERRORS=0; WARNINGS=0
+
+        err()  { echo "::error file=$DOCKERFILE::[$1] $2";   ERRORS=$((ERRORS+1)); }
+        warn() { echo "::warning file=$DOCKERFILE::[$1] $2"; WARNINGS=$((WARNINGS+1)); }
+        ok()   { echo "✅ [$1] $2"; }
+
+        # R7 — Pas de tag :latest dans FROM
+        grep -qE '^FROM [^:@]+:latest' "$DOCKERFILE" 2>/dev/null \
+          && err  "R7" "Tag :latest dans FROM — fixer une version ou un digest SHA256" \
+          || ok   "R7" "Aucun tag :latest"
+
+        # R7+ — Digest SHA256 recommandé
+        grep -qE '^FROM .+@sha256:[a-f0-9]{64}' "$DOCKERFILE" 2>/dev/null \
+          && ok   "R7+" "Digest SHA256 présent" \
+          || warn "R7+" "Digest SHA256 recommandé dans FROM"
+
+        # R5 — Build multi-stage
+        FROM_COUNT=$(grep -cE '^FROM ' "$DOCKERFILE" 2>/dev/null || echo 0)
+        [ "$FROM_COUNT" -gt 1 ] \
+          && ok   "R5" "Build multi-stage ($FROM_COUNT stages)" \
+          || warn "R5" "Build mono-stage — multi-stage recommandé"
+
+        # R4 — Image de base minimale
+        BASE=$(grep -E '^FROM ' "$DOCKERFILE" | tail -1 | awk '{print $2}')
+        echo "$BASE" | grep -qE '(distroless|scratch|alpine|slim)' \
+          && ok   "R4" "Image minimale : $BASE" \
+          || warn "R4" "Image non minimale ($BASE) — préférer distroless, alpine ou slim"
+
+        # R8 — USER non-root
+        if ! grep -qE '^USER ' "$DOCKERFILE" 2>/dev/null; then
+          err "R8" "USER absent — le conteneur s'exécutera en root"
+        else
+          LAST_USER=$(grep -E '^USER ' "$DOCKERFILE" | tail -1 | awk '{print $2}')
+          [[ "$LAST_USER" == "root" || "$LAST_USER" == "0" ]] \
+            && err "R8" "USER root — utiliser un utilisateur non-privilégié" \
+            || ok  "R8" "Utilisateur non-root : $LAST_USER"
+        fi
+
+        # R9 — Pas de sudo
+        grep -qE '\bsudo\b' "$DOCKERFILE" 2>/dev/null \
+          && err "R9" "Commande sudo détectée" \
+          || ok  "R9" "Aucun sudo"
+
+        # R14 — Pas de --privileged
+        grep -qE '\-\-privileged' "$DOCKERFILE" 2>/dev/null \
+          && err  "R14" "--privileged interdit en production" \
+          || ok   "R14" "Pas de --privileged"
+
+        # R19 — Pas de secrets en ENV
+        grep -qEi '^ENV[[:space:]]+(PASSWORD|SECRET|KEY|TOKEN|CREDENTIAL|PRIVATE|API_KEY)' \
+          "$DOCKERFILE" 2>/dev/null \
+          && err "R19" "Secret potentiel dans ENV — utiliser Docker secrets ou un vault" \
+          || ok  "R19" "Aucun secret dans ENV"
+
+        # R16 — HEALTHCHECK
+        grep -qE '^HEALTHCHECK' "$DOCKERFILE" 2>/dev/null \
+          && ok   "R16" "HEALTHCHECK présent" \
+          || warn "R16" "HEALTHCHECK absent"
+
+        # BP — COPY vs ADD
+        grep -qE '^ADD ' "$DOCKERFILE" 2>/dev/null \
+          && warn "BP" "Instruction ADD — préférer COPY" \
+          || ok   "BP" "Aucun ADD"
+
+        # BP — .dockerignore
+        DOCKERFILE_DIR=$(dirname "$DOCKERFILE")
+        DIGN=""
+        [ -f "$DOCKERFILE_DIR/.dockerignore" ] && DIGN="$DOCKERFILE_DIR/.dockerignore"
+        [ -f ".dockerignore" ]                 && DIGN=".dockerignore"
+        [ -n "$DIGN" ] \
+          && ok   "IGNORE" ".dockerignore : $DIGN" \
+          || warn "IGNORE" ".dockerignore absent"
+
+        echo ""
+        printf "Résultat : %d erreur(s)  %d avertissement(s)\n" "$ERRORS" "$WARNINGS"
+        [ "$ERRORS" -gt 0 ] && exit 1 || exit 0

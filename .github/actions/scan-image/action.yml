@@ -1,0 +1,51 @@
+name: Image Vulnerability Scan
+description: "Trivy (CVE) + Dockle (CIS benchmark) sur l'image Docker."
+
+inputs:
+  image_uri:
+    description: "URI complète de l'image (name@sha256:...)"
+    required: true
+  severity:
+    description: "Filtre de sévérité"
+    default: "CRITICAL,HIGH"
+  fail_on_vulnerability:
+    description: "'true' pour bloquer sur les findings"
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+
+    - name: Trivy · image scan
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        image-ref:    ${{ inputs.image_uri }}
+        format:       sarif
+        output:       trivy-image.sarif
+        severity:     ${{ inputs.severity }}
+        exit-code:    ${{ inputs.fail_on_vulnerability == 'true' && '1' || '0' }}
+        scanners:     vuln
+        trivyignores: .trivyignore
+
+    - name: Trivy · upload SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-image.sarif
+        category:   trivy-image
+
+    - name: Dockle · CIS benchmark
+      if: always()
+      shell: bash
+      env:
+        DOCKLE_VERSION: "0.4.14"
+        GH_TOKEN:       ${{ github.token }}
+      run: |
+        set -euo pipefail
+        curl -sSfL \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          "https://github.com/goodwithtech/dockle/releases/download/v${DOCKLE_VERSION}/dockle_${DOCKLE_VERSION}_Linux-64bit.tar.gz" \
+          -o dockle.tar.gz
+        tar -xzf dockle.tar.gz dockle && rm dockle.tar.gz
+        chmod +x dockle
+        ./dockle --exit-level fatal "${{ inputs.image_uri }}"

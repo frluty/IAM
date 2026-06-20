@@ -1,0 +1,51 @@
+name: Sign Image
+description: "Cosign image signing — keyless (Sigstore OIDC) ou keypair."
+
+inputs:
+  image_uri:
+    description: "URI complète de l'image (name@sha256:...)"
+    required: true
+  signing_mode:
+    description: "keyless | keypair"
+    default: "keyless"
+  cosign_private_key:
+    description: "Clé privée PEM (mode keypair uniquement)"
+    default: ""
+  cosign_password:
+    description: "Passphrase de la clé (mode keypair uniquement)"
+    default: ""
+
+runs:
+  using: composite
+  steps:
+
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign · keyless
+      if: inputs.signing_mode == 'keyless'
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+      run: cosign sign --yes "${{ inputs.image_uri }}"
+
+    - name: Sign · keypair
+      if: inputs.signing_mode == 'keypair'
+      shell: bash
+      env:
+        COSIGN_PASSWORD: ${{ inputs.cosign_password }}
+      run: |
+        printf '%s' "${{ inputs.cosign_private_key }}" > /tmp/cosign.key
+        cosign sign --yes --key /tmp/cosign.key "${{ inputs.image_uri }}"
+        rm -f /tmp/cosign.key
+
+    - name: Verify signature
+      if: inputs.signing_mode == 'keyless'
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+      run: |
+        cosign verify \
+          --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+          --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+          "${{ inputs.image_uri }}"

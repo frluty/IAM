@@ -1,0 +1,289 @@
+name: Reusable — Security Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "python | node | auto"
+        default: "auto"
+        type: string
+      app_path:
+        description: "Répertoire source"
+        default: "."
+        type: string
+      image_name:
+        description: "Nom de l'image en kebab-case (ex: mon-api)"
+        required: true
+        type: string
+      dockerfile:
+        default: "Dockerfile"
+        type: string
+      context:
+        default: "."
+        type: string
+      registry_type:
+        description: "ghcr | acr | harbor"
+        required: true
+        type: string
+      registry_url:
+        description: "Hostname du registre (requis pour acr et harbor)"
+        default: ""
+        type: string
+      enable_signing:
+        default: true
+        type: boolean
+      signing_mode:
+        description: "keyless | keypair"
+        default: "keyless"
+        type: string
+      severity:
+        default: "CRITICAL,HIGH"
+        type: string
+      fail_on_vulnerability:
+        default: true
+        type: boolean
+
+    secrets:
+      AZURE_CLIENT_ID:       { required: false }
+      AZURE_CLIENT_SECRET:   { required: false }
+      AZURE_TENANT_ID:       { required: false }
+      AZURE_SUBSCRIPTION_ID: { required: false }
+      HARBOR_USERNAME:       { required: false }
+      HARBOR_PASSWORD:       { required: false }
+      COSIGN_PRIVATE_KEY:    { required: false }
+      COSIGN_PASSWORD:       { required: false }
+
+    outputs:
+      image_digest:
+        value: ${{ jobs.build-push.outputs.digest }}
+      image_uri:
+        value: ${{ jobs.build-push.outputs.image_uri }}
+
+concurrency:
+  group: security-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  detect:
+    name: Detect Language
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      language: ${{ steps.action.outputs.language }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/detect-language
+        id: action
+        with:
+          language: ${{ inputs.language }}
+          app_path: ${{ inputs.app_path }}
+
+  harden:
+    name: Hardening ANSSI · Dockerfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: detect
+    permissions:
+      contents:        read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/harden-dockerfile
+        with:
+          dockerfile: ${{ inputs.dockerfile }}
+
+  code-scan:
+    name: "CodeQL · ${{ needs.detect.outputs.language }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: detect
+    permissions:
+      actions:         read
+      contents:        read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: ./.github/actions/scan-code
+        with:
+          language: ${{ needs.detect.outputs.language }}
+
+  dep-scan:
+    name: Deps · Trivy FS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: detect
+    permissions:
+      contents:        read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/scan-deps
+        with:
+          app_path:              ${{ inputs.app_path }}
+          severity:              ${{ inputs.severity }}
+          fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}
+
+  build-push:
+    name: "Build & Push · ${{ inputs.registry_type }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [detect, harden, code-scan, dep-scan]
+    if: |
+      always() &&
+      needs.harden.result    == 'success' &&
+      needs.code-scan.result == 'success' &&
+      needs.dep-scan.result  == 'success'
+    permissions:
+      contents:     read
+      packages:     write
+      id-token:     write
+      attestations: write
+    outputs:
+      digest:    ${{ steps.push.outputs.digest }}
+      image_uri: ${{ steps.uri.outputs.value }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: ./.github/actions/registry-login-ghcr
+        if: inputs.registry_type == 'ghcr'
+
+      - uses: ./.github/actions/registry-login-acr
+        if: inputs.registry_type == 'acr'
+        with:
+          registry_url:    ${{ inputs.registry_url }}
+          client_id:       ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: ./.github/actions/registry-login-harbor
+        if: inputs.registry_type == 'harbor'
+        with:
+          registry_url: ${{ inputs.registry_url }}
+          username:     ${{ secrets.HARBOR_USERNAME }}
+          password:     ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Registry prefix
+        id: reg
+        shell: bash
+        run: |
+          case "${{ inputs.registry_type }}" in
+            ghcr)       echo "prefix=ghcr.io/${{ github.repository_owner }}" >> "$GITHUB_OUTPUT" ;;
+            acr|harbor) echo "prefix=${{ inputs.registry_url }}"              >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: ./.github/actions/docker-metadata
+        id: meta
+        with:
+          image_name:      ${{ inputs.image_name }}
+          registry_prefix: ${{ steps.reg.outputs.prefix }}
+          language:        ${{ needs.detect.outputs.language }}
+
+      - uses: docker/build-push-action@v6
+        id: push
+        with:
+          context:    ${{ inputs.context }}
+          file:       ${{ inputs.dockerfile }}
+          push:       true
+          tags:       ${{ steps.meta.outputs.tags }}
+          labels:     ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          provenance: true
+          sbom:       true
+
+      - name: Image URI
+        id: uri
+        shell: bash
+        run: |
+          echo "value=${{ steps.meta.outputs.image_base }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-name:     ${{ steps.meta.outputs.image_base }}
+          subject-digest:   ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  image-scan:
+    name: Image Scan · Trivy + Dockle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build-push
+    if: needs.build-push.result == 'success'
+    permissions:
+      contents:        read
+      security-events: write
+      packages:        read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/registry-login-ghcr
+        if: inputs.registry_type == 'ghcr'
+
+      - uses: ./.github/actions/registry-login-acr
+        if: inputs.registry_type == 'acr'
+        with:
+          registry_url:    ${{ inputs.registry_url }}
+          client_id:       ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: ./.github/actions/registry-login-harbor
+        if: inputs.registry_type == 'harbor'
+        with:
+          registry_url: ${{ inputs.registry_url }}
+          username:     ${{ secrets.HARBOR_USERNAME }}
+          password:     ${{ secrets.HARBOR_PASSWORD }}
+
+      - uses: ./.github/actions/scan-image
+        with:
+          image_uri:             ${{ needs.build-push.outputs.image_uri }}
+          severity:              ${{ inputs.severity }}
+          fail_on_vulnerability: ${{ inputs.fail_on_vulnerability && 'true' || 'false' }}
+
+  sign:
+    name: "Sign · ${{ inputs.signing_mode }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-push, image-scan]
+    if: |
+      inputs.enable_signing &&
+      needs.build-push.result == 'success' &&
+      needs.image-scan.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/registry-login-ghcr
+        if: inputs.registry_type == 'ghcr'
+
+      - uses: ./.github/actions/registry-login-acr
+        if: inputs.registry_type == 'acr'
+        with:
+          registry_url:    ${{ inputs.registry_url }}
+          client_id:       ${{ secrets.AZURE_CLIENT_ID }}
+          client_secret:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant_id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: ./.github/actions/registry-login-harbor
+        if: inputs.registry_type == 'harbor'
+        with:
+          registry_url: ${{ inputs.registry_url }}
+          username:     ${{ secrets.HARBOR_USERNAME }}
+          password:     ${{ secrets.HARBOR_PASSWORD }}
+
+      - uses: ./.github/actions/sign-image
+        with:
+          image_uri:          ${{ needs.build-push.outputs.image_uri }}
+          signing_mode:       ${{ inputs.signing_mode }}
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          cosign_password:    ${{ secrets.COSIGN_PASSWORD }}

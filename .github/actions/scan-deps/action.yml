@@ -1,0 +1,37 @@
+name: Dependency Scan — Trivy FS
+description: "Scan Trivy des lockfiles — bloque si vulnérabilité CRITICAL ou HIGH."
+
+inputs:
+  app_path:
+    description: "Répertoire contenant les lockfiles"
+    default: "."
+  severity:
+    description: "Filtre de sévérité"
+    default: "CRITICAL,HIGH"
+  fail_on_vulnerability:
+    description: "'true' pour bloquer le pipeline"
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+
+    - name: Trivy · lockfile scan
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type:    fs
+        scan-ref:     ${{ inputs.app_path }}
+        scanners:     vuln
+        format:       sarif
+        output:       trivy-fs.sarif
+        severity:     ${{ inputs.severity }}
+        exit-code:    ${{ inputs.fail_on_vulnerability == 'true' && '1' || '0' }}
+        trivyignores: .trivyignore
+
+    - name: Upload SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-fs.sarif
+        category:   trivy-deps
+      continue-on-error: true
